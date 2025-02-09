@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            //"preLaunchTask": "${defaultBuildTask}",
+            "type": "probe-rs-debug",
+            "request": "launch",
+            "name": "Launch",
+            "flashingConfig": {
+                "flashingEnabled": true,
+            },
+            "chip": "nRF5340_xxAA",
+            "coreConfigs": [
+                {
+                    "coreIndex": 1,
+                    "programBinary": "${workspaceFolder}/target/thumbv8m.main-none-eabihf/release/embassy-knx"
+                }
+            ]
+        }
+    ]
+}

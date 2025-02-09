@@ -1,0 +1,23 @@
+{
+    "[toml]": {
+        "editor.formatOnSave": false
+    },
+    "[markdown]": {
+        "editor.formatOnSave": false
+    },
+    "rust-analyzer.check.allTargets": false,
+    "rust-analyzer.check.noDefaultFeatures": true,
+    "rust-analyzer.cargo.noDefaultFeatures": true,
+    "rust-analyzer.showUnlinkedFileNotification": true,
+    "rust-analyzer.cargo.target": "thumbv8m.main-none-eabihf",
+    "rust-analyzer.cargo.features": [
+        // Comment out these features when working on the examples. Most example crates do not have any cargo features.
+        //"stm32f446re",
+        //"time-driver-any",
+        //"unstable-pac",
+        //"exti",
+        //"rt",
+    ],
+    "rust-analyzer.restartServerOnConfigChange": true,
+    "rust-analyzer.cargo.allTargets": false,
+}
