@@ -59,10 +59,7 @@ impl ApplicationLayer {
         }
     }
 
-    pub async fn receive(
-        &self,
-        frame: Result<TransportServiceInd, transport_layer::TransportLayerError>,
-    ) {
+    pub async fn receive(&self, frame: Result<TransportServiceInd, FrameError>) {
         match frame {
             Ok(TransportServiceInd::DataGroup(frame)) => {
                 let apci = frame.apci(ApciBits::Four);

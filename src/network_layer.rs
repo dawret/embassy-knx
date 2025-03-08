@@ -8,6 +8,7 @@ pub struct NetworkLayer {
 
 pub enum NetworkServiceReq {
     DataGroup(Frame),
+    DataIndividual(Frame),
 }
 
 #[derive(Format)]
@@ -50,6 +51,7 @@ impl NetworkLayer {
     pub async fn send(&self, req: NetworkServiceReq) {
         match req {
             NetworkServiceReq::DataGroup(frame) => self.data_link.send(frame).await,
+            NetworkServiceReq::DataIndividual(frame) => self.data_link.send(frame).await,
         }
     }
 }

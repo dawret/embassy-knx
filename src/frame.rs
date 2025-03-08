@@ -13,10 +13,10 @@ pub enum FrameType {
 
 #[derive(Format)]
 pub enum FrameError {
-    InvalidData,
     InvalidLength,
     OutOfMemory,
     Checksum,
+    InvalidTpdu(u8),
 }
 
 type FrameResult<T> = Result<T, FrameError>;
@@ -44,7 +44,7 @@ enum Repeated {
     NotRepeated = 1,
 }
 
-#[derive(PartialEq, PartialOrd, Hash)]
+#[derive(PartialEq, PartialOrd, Hash, Clone)]
 pub struct IndividualAddress(u16);
 
 impl IndividualAddress {
@@ -163,7 +163,7 @@ pub trait FrameReader {
     const LG_FIELD: usize = 5;
     const AT_FIELD: usize;
     const HOP_COUNT_FIELD: usize;
-    const TPCI_FIELD: usize = Self::HEADER_LENGTH + 0;
+    const TPCI_OFFSET: usize = Self::HEADER_LENGTH - 1;
     const MAX_FRAME_SIZE: usize;
     const MIN_FRAME_SIZE: usize;
 
@@ -192,17 +192,20 @@ pub trait FrameReader {
     }
     fn priority(&self) -> Priority {
         // This is safe, possible values: 0, 1, 2, 3
-        unsafe { Priority::unchecked_transmute_from((self.data()[0] >> 2) & 0x3) }
+        unsafe { Priority::unchecked_transmute_from((self.data()[Self::CTRL] >> 2) & 0x3) }
     }
     fn repeated(&self) -> Repeated {
         // This is safe, possible values: 0, 1
-        unsafe { Repeated::unchecked_transmute_from((self.data()[0] >> 5) & 0x1) }
+        unsafe { Repeated::unchecked_transmute_from((self.data()[Self::CTRL] >> 5) & 0x1) }
     }
     fn tpci(&self, bits: TpciBits) -> u8 {
         match bits {
-            TpciBits::Six => self.data()[Self::TPCI_FIELD] >> 2,
-            TpciBits::Eight => self.data()[Self::TPCI_FIELD],
+            TpciBits::Six => self.data()[Self::TPCI_OFFSET] >> 2,
+            TpciBits::Eight => self.data()[Self::TPCI_OFFSET],
         }
+    }
+    fn tpci_seq(&self) -> u8 {
+        (self.data()[Self::TPCI_OFFSET] >> 2) & 0x7
     }
     fn apci(&self, bits: ApciBits) -> u16 {
         let apci: u16 = ((self.data()[Self::APCI_OFFSET] as u16 & 0x3) << 8)
@@ -213,7 +216,7 @@ pub trait FrameReader {
         }
     }
     fn apdu_data(&self) -> &[u8] {
-        &self.data()[Self::APCI_OFFSET + 1..]
+        &self.data()[Self::APCI_OFFSET + 1..self.length() as usize]
     }
 
     fn checksum(&self) -> u8 {
@@ -280,17 +283,19 @@ pub trait FrameWriter: FrameReader + Sized {
         datapoint.write(
             &mut frame.mut_data()[Self::APCI_OFFSET + 1 + size..Self::APCI_OFFSET + size + 2],
         );
-        frame.set_length(Self::HEADER_LENGTH + Self::APCI_BASE_SIZE + size)?;
-        frame.set_frame_type();
+        frame.set_length(Self::HEADER_LENGTH + Self::APCI_BASE_SIZE + size + 1)?;
         Ok(frame)
     }
     fn set_tpci(&mut self, bits: TpciBits, val: u8) {
         match bits {
             TpciBits::Six => {
-                self.mut_data()[Self::TPCI_FIELD] |= val << 2;
+                self.mut_data()[Self::TPCI_OFFSET] |= val << 2;
             }
-            TpciBits::Eight => self.mut_data()[Self::TPCI_FIELD] = val,
+            TpciBits::Eight => self.mut_data()[Self::TPCI_OFFSET] = val,
         }
+    }
+    fn set_tpci_seq(&mut self, val: u8) {
+        self.mut_data()[Self::TPCI_OFFSET] |= (val & 0x7) << 2;
     }
     fn set_apci(&mut self, bits: ApciBits, val: u16) {
         match bits {
@@ -312,14 +317,14 @@ impl FrameReader for StandardFrame {
     const CTRL_OFFSET: usize = 1;
     const AT_FIELD: usize = 5;
     const HOP_COUNT_FIELD: usize = 5;
-    const MAX_FRAME_SIZE: usize = 23;
+    const MAX_FRAME_SIZE: usize = 24;
     const MIN_FRAME_SIZE: usize = 8;
 
     fn data(&self) -> &[u8] {
         &self.0
     }
     fn length(&self) -> u8 {
-        (self.0[Self::LG_FIELD] & 0xF) + Self::HEADER_LENGTH as u8
+        (self.0[Self::LG_FIELD] & 0xF) + Self::HEADER_LENGTH as u8 + 1
     }
 }
 
@@ -329,7 +334,7 @@ impl FrameWriter for StandardFrame {
     }
     fn set_length(&mut self, length: usize) -> FrameResult<()> {
         if length <= Self::MAX_FRAME_SIZE || length >= Self::MIN_FRAME_SIZE {
-            self.0[Self::LG_FIELD] |= (length as u8 - Self::HEADER_LENGTH as u8) & 0xF;
+            self.0[Self::LG_FIELD] |= (length as u8 - Self::HEADER_LENGTH as u8 - 1) & 0xF;
             self.0
                 .resize_default(length)
                 .map_err(|_| FrameError::InvalidLength)?;
@@ -347,7 +352,10 @@ impl FrameWriter for StandardFrame {
             .map_err(|_| FrameError::OutOfMemory)?;
         buf.resize_default(size)
             .map_err(|_| FrameError::InvalidLength)?;
-        Ok(StandardFrame(buf))
+        let mut frame = StandardFrame(buf);
+        frame.set_length(size)?;
+        frame.set_frame_type();
+        Ok(frame)
     }
 }
 
@@ -357,9 +365,12 @@ impl defmt::Format for StandardFrame {
     }
 }
 
-impl StandardFrame {
-    pub fn from_buffer(buf: Box<FRAME_POOL>) -> Self {
-        Self(buf)
+impl TryFrom<&StandardFrame> for StandardFrame {
+    type Error = FrameError;
+    fn try_from(value: &StandardFrame) -> Result<Self, Self::Error> {
+        let mut new_frame = StandardFrame::new(value.length() as usize)?;
+        new_frame.0.clone_from_slice(value.data());
+        Ok(new_frame)
     }
 }
 
@@ -376,7 +387,7 @@ impl FrameReader for ExtendedFrame {
         &self.0
     }
     fn length(&self) -> u8 {
-        self.0[Self::LG_FIELD] + Self::HEADER_LENGTH as u8
+        self.0[Self::LG_FIELD] + Self::HEADER_LENGTH as u8 + 1
     }
 }
 
@@ -386,7 +397,7 @@ impl FrameWriter for ExtendedFrame {
     }
     fn set_length(&mut self, length: usize) -> FrameResult<()> {
         if length <= Self::MAX_FRAME_SIZE || length >= Self::MIN_FRAME_SIZE {
-            self.0[Self::LG_FIELD] = self.0.len() as u8 - Self::HEADER_LENGTH as u8;
+            self.0[Self::LG_FIELD] = self.0.len() as u8 - Self::HEADER_LENGTH as u8 - 1;
             self.0
                 .resize_default(length)
                 .map_err(|_| FrameError::InvalidLength)?;
@@ -411,6 +422,15 @@ impl FrameWriter for ExtendedFrame {
 impl defmt::Format for ExtendedFrame {
     fn format(&self, fmt: Formatter) {
         FrameReader::format(self, fmt);
+    }
+}
+
+impl TryFrom<&ExtendedFrame> for ExtendedFrame {
+    type Error = FrameError;
+    fn try_from(value: &ExtendedFrame) -> Result<Self, Self::Error> {
+        let mut new_frame = ExtendedFrame::new(value.length() as usize)?;
+        new_frame.0.clone_from_slice(value.data());
+        Ok(new_frame)
     }
 }
 
@@ -469,6 +489,12 @@ impl Frame {
             Self::Extended(f) => f.tpci(bits),
         }
     }
+    pub fn tpci_seq(&self) -> u8 {
+        match self {
+            Self::Standard(f) => f.tpci_seq(),
+            Self::Extended(f) => f.tpci_seq(),
+        }
+    }
     pub fn apci(&self, bits: ApciBits) -> u16 {
         match self {
             Self::Standard(f) => f.apci(bits),
@@ -485,6 +511,12 @@ impl Frame {
         match self {
             Self::Standard(f) => f.checksum(),
             Self::Extended(f) => f.checksum(),
+        }
+    }
+    pub fn mut_data(&mut self) -> &mut [u8] {
+        match self {
+            Self::Standard(f) => f.mut_data(),
+            Self::Extended(f) => f.mut_data(),
         }
     }
     pub fn set_repeated(&mut self, repeated: Repeated) {
@@ -523,6 +555,12 @@ impl Frame {
             Self::Extended(f) => f.set_tpci(bits, val),
         }
     }
+    pub fn set_tpci_seq(&mut self, val: u8) {
+        match self {
+            Self::Standard(f) => f.set_tpci_seq(val),
+            Self::Extended(f) => f.set_tpci_seq(val),
+        }
+    }
     pub fn set_apci(&mut self, bits: ApciBits, val: u16) {
         match self {
             Self::Standard(f) => f.set_apci(bits, val),
@@ -547,5 +585,15 @@ impl From<StandardFrame> for Frame {
 impl From<ExtendedFrame> for Frame {
     fn from(value: ExtendedFrame) -> Self {
         Self::Extended(value)
+    }
+}
+
+impl TryFrom<&Frame> for Frame {
+    type Error = FrameError;
+    fn try_from(value: &Frame) -> Result<Self, Self::Error> {
+        match value {
+            Frame::Standard(f) => StandardFrame::try_from(f).map(|f| f.into()),
+            Frame::Extended(f) => ExtendedFrame::try_from(f).map(|f| f.into()),
+        }
     }
 }

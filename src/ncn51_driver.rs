@@ -9,6 +9,7 @@ use embassy_nrf::peripherals::SERIAL0;
 use embassy_nrf::{bind_interrupts, uarte};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, WithTimeout};
 use heapless::Vec;
 use heapless::{box_pool, pool::boxed::BoxBlock};
@@ -18,22 +19,22 @@ type Serial = uarte::Uarte<'static, SERIAL0>;
 
 //TODO: Add "bytes_read" information
 #[derive(Format)]
-enum ReceiveError {
+enum TransferError {
     TimeoutError(usize),
     ReadError(uarte::Error),
     FrameError(FrameError),
-    OutOfMemory,
+    InvalidData(u8),
 }
 
-impl From<uarte::Error> for ReceiveError {
+impl From<uarte::Error> for TransferError {
     fn from(err: uarte::Error) -> Self {
-        ReceiveError::ReadError(err)
+        TransferError::ReadError(err)
     }
 }
 
-impl From<FrameError> for ReceiveError {
+impl From<FrameError> for TransferError {
     fn from(err: FrameError) -> Self {
-        ReceiveError::FrameError(err)
+        TransferError::FrameError(err)
     }
 }
 
@@ -74,6 +75,12 @@ mod commands {
     pub const U_L_DATA_END_REQ: u8 = 0x40;
 }
 
+#[derive(Format)]
+pub enum ConStatus {
+    Ok,
+    NotOk,
+}
+
 #[allow(dead_code)]
 enum AckTypes {
     NACK = 0x4,
@@ -90,6 +97,7 @@ const CHANNEL_SIZE: usize = 8;
 box_pool!(FRAME_POOL: Vec<u8, MAX_FRAME_SIZE>);
 //box_pool!(FRAME_POOL: dyn FrameWriter);
 pub static CTRL_CHANNEL: Channel<ThreadModeRawMutex, CtrlMsg, CHANNEL_SIZE> = Channel::new();
+pub static CON_SIGNAL: Signal<ThreadModeRawMutex, ConStatus> = Signal::new();
 pub static FRAME_CHANNEL_TX: Channel<ThreadModeRawMutex, Frame, CHANNEL_SIZE> = Channel::new();
 pub static FRAME_CHANNEL_RX: Channel<ThreadModeRawMutex, Frame, CHANNEL_SIZE> = Channel::new();
 
@@ -128,7 +136,7 @@ impl NCN51Driver {
         [Self::FRAME_TYPE_STD, Self::FRAME_TYPE_EXT].contains(&(ctrl & Self::FRAME_TYPE_MASK))
     }
 
-    async fn ack(&mut self, ack: AckTypes) -> Result<(), ReceiveError> {
+    async fn ack(&mut self, ack: AckTypes) -> Result<(), TransferError> {
         self.uarte
             .write(&[commands::U_ACKN_REQ | ack as u8])
             .await?;
@@ -155,6 +163,7 @@ impl NCN51Driver {
                             }
                             Err(e) => {
                                 info!("Reception error: {}", e);
+                                self.read_with_timeout_ignore_errors().await;
                                 //TODO: Handle NACK
 
                                 /*if let Err(e) = self.ack(AckTypes::NACK).await {
@@ -169,41 +178,55 @@ impl NCN51Driver {
                 }
                 Either::Second(_) => {
                     let frame = FRAME_CHANNEL_RX.receive().await;
-                    if let Err(e) = self.send_frame(frame).await {
-                        error!("Transmission error: {}", e);
+                    match self.send_frame(frame).await {
+                        Ok(con_status) => {
+                            CON_SIGNAL.signal(con_status);
+                        }
+                        Err(e) => {
+                            error!("Transmission error: {}", e);
+                            CON_SIGNAL.signal(ConStatus::NotOk);
+                        }
                     }
                 }
             }
         }
     }
 
-    async fn send_frame(&mut self, frame: Frame) -> Result<(), ReceiveError> {
-        info!("Sending frame: {}", frame);
+    async fn send_frame(&mut self, mut frame: Frame) -> Result<ConStatus, TransferError> {
         let buf = frame.data();
         let checksum = frame.checksum();
         let mut cmd = [0; 1];
         cmd[0] = commands::U_L_DATA_START_REQ;
         self.uarte.write_from_ram(&mut cmd).await?;
         self.uarte.write_from_ram(&buf[0..1]).await?;
-        for i in 1..buf.len() {
+        for i in 1..buf.len() - 1 {
             cmd[0] = commands::U_L_DATA_CONT_REQ + i as u8;
             self.uarte.write_from_ram(&mut cmd).await?;
             self.uarte.write_from_ram(&buf[i..i + 1]).await?;
         }
-        cmd[0] = commands::U_L_DATA_END_REQ | buf.len() as u8;
+        cmd[0] = commands::U_L_DATA_END_REQ | (buf.len() as u8 - 1);
         self.uarte.write_from_ram(&mut cmd).await?;
         cmd[0] = checksum;
         self.uarte.write_from_ram(&mut cmd).await?;
-        let mut rx_buf = [0; 264];
-        for i in 0..buf.len() + 1 {
+        let rx_buf = frame.mut_data();
+        for i in 0..rx_buf.len() {
             self.read_with_timeout(&mut rx_buf[i..i + 1]).await?;
         }
         self.uarte.read(&mut cmd).await?;
-        info!("Frame transfer complete. L_Data.con: {:x}", cmd[0]);
-        Ok(())
+        if cmd[0] & 0x7f != 0xb {
+            error!("Invalid L_Data.con: {:x}", cmd[0]);
+            return Err(TransferError::InvalidData(cmd[0]));
+        }
+        let con_status = if (cmd[0] >> 7) != 0 {
+            ConStatus::Ok
+        } else {
+            ConStatus::NotOk
+        };
+        //info!("Frame transfer complete. L_Data.con: {:x}", cmd[0]);
+        Ok(con_status)
     }
 
-    async fn receive_frame_int<T: FrameWriter>(&mut self, ctrl: u8) -> Result<T, ReceiveError> {
+    async fn receive_frame_int<T: FrameWriter>(&mut self, ctrl: u8) -> Result<T, TransferError> {
         let mut frame = T::new(T::MAX_FRAME_SIZE)?;
         frame.mut_data()[0] = ctrl;
         let bytes_read = 1 + self
@@ -216,24 +239,24 @@ impl NCN51Driver {
                 .await
             {
                 Ok(bytes) => Ok(bytes),
-                Err(ReceiveError::TimeoutError(bytes)) => Ok(bytes),
+                Err(TransferError::TimeoutError(bytes)) => Ok(bytes),
                 Err(e) => Err(e),
             }?;
         if bytes_read < T::MIN_FRAME_SIZE
             || bytes_read > T::MAX_FRAME_SIZE
-            || bytes_read != frame.length() as usize + 1
+            || bytes_read != frame.length() as usize
         {
-            return Err(ReceiveError::FrameError(FrameError::InvalidLength));
+            return Err(TransferError::FrameError(FrameError::InvalidLength));
         }
         if frame.data()[bytes_read] != frame.checksum() {
-            return Err(ReceiveError::FrameError(FrameError::Checksum));
+            return Err(TransferError::FrameError(FrameError::Checksum));
         }
-        frame.set_length(bytes_read - 1)?;
+        frame.set_length(bytes_read)?;
 
         Ok(frame)
     }
 
-    async fn receive_frame(&mut self, ctrl: u8) -> Result<Frame, ReceiveError> {
+    async fn receive_frame(&mut self, ctrl: u8) -> Result<Frame, TransferError> {
         match ctrl & Self::FRAME_TYPE_MASK {
             Self::FRAME_TYPE_STD => {
                 let frame = self.receive_frame_int(ctrl).await?;
@@ -247,7 +270,7 @@ impl NCN51Driver {
         }
     }
 
-    async fn ack_if_addressed(&mut self, dst_addr: &Address) -> Result<(), ReceiveError> {
+    async fn ack_if_addressed(&mut self, dst_addr: &Address) -> Result<(), TransferError> {
         if match dst_addr {
             Address::Individual(ref addr) => addr == &crate::settings::ADDRESS,
             Address::Group(_) => true,
@@ -259,14 +282,14 @@ impl NCN51Driver {
         }
     }
 
-    async fn read_with_timeout(&mut self, buf: &mut [u8]) -> Result<usize, ReceiveError> {
+    async fn read_with_timeout(&mut self, buf: &mut [u8]) -> Result<usize, TransferError> {
         let mut read = 0;
         for i in 0..buf.len() {
             self.uarte
                 .read(&mut buf[i..i + 1])
                 .with_timeout(Duration::from_micros(Self::BUS_SILENCE_US))
                 .await
-                .map_err(|_| ReceiveError::TimeoutError(read))??;
+                .map_err(|_| TransferError::TimeoutError(read))??;
             read = read + 1;
         }
         Ok(read)

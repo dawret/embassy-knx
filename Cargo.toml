@@ -26,6 +26,7 @@ assign-resources = { version = "0.4" }
 num_enum = { version = "0.7", default-features = false }
 ambassador = "0.4"
 enum_dispatch = "0.3"
+futures = {version="0.3", default-features = false, features = ["async-await", "cfg-target-has-atomic"]}
 #rand = { version = "0.8.4", default-features = false }
 #embedded-storage = "0.3.1"
 #usbd-hid = "0.8.1"
