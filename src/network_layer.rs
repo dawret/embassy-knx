@@ -38,7 +38,6 @@ impl NetworkLayer {
                             return NetworkServiceInd::DataGroup(frame);
                         }
                     }
-                    _ => {}
                 },
                 DataServiceInd::SystemBroadcast(frame) => {
                     return NetworkServiceInd::DataSystemBroadcast(frame)

@@ -26,7 +26,8 @@ impl DataLinkLayer {
     pub async fn send(&self, frame: Frame) {
         self.bus.con.reset();
         self.bus.bus_tx.send(frame).await;
-        let con = self.bus.con.wait().await;
+        // M3: the confirmation is not reported upward yet.
+        let _con = self.bus.con.wait().await;
     }
 
     pub async fn receive(&self) -> DataServiceInd {

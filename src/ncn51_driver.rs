@@ -11,6 +11,8 @@ use embedded_io_async::{ErrorKind, Read, Write};
 //TODO: Add "bytes_read" information
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+// The payloads are only for logging, and `Debug` doesn't count as a read.
+#[cfg_attr(not(feature = "defmt"), allow(dead_code))]
 enum TransferError {
     TimeoutError(usize),
     ReadError(ErrorKind),
@@ -239,7 +241,6 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
         if match dst_addr {
             Address::Individual(ref addr) => addr == &crate::settings::ADDRESS,
             Address::Group(_) => true,
-            _ => false,
         } {
             self.ack(AckTypes::ACK).await
         } else {

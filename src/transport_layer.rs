@@ -29,6 +29,7 @@ pub enum TransportServiceInd {
 }
 
 pub struct DataGroupReq {
+    #[allow(dead_code)] // S6: unused until the association table exists.
     tsap: u8,
     frame: Frame,
 }
@@ -205,6 +206,7 @@ fn prev_seq(seq: u8) -> u8 {
     seq.wrapping_sub(1) & 0xF
 }
 
+#[allow(dead_code)] // OpenWait and Connecting belong to the unwired sending side.
 enum States {
     Closed,
     OpenIdle,
@@ -219,9 +221,12 @@ struct Connection {
     rep_count: u8,
     src_addr: Option<IndividualAddress>,
     connection_timeout: Option<Instant>,
+    #[allow(dead_code)] // Only read by repeat_data_A9, which is not wired up yet.
     stored_frame: Option<Frame>,
 }
 
+// Method suffixes are the action numbers (A1..A10) of the KNX transport layer state machine.
+#[allow(non_snake_case)]
 impl Connection {
     const MAX_REP_COUNT: u8 = 3;
     const CONNECTION_TIMEOUT_SEC: u64 = 6;
@@ -386,6 +391,7 @@ impl Connection {
         Ok(None)
     }
 
+    #[allow(dead_code)] // Not wired into handle_event yet.
     async fn nak_A4(
         &mut self,
         frame: Frame,
@@ -418,6 +424,7 @@ impl Connection {
         Ok(Some(TransportServiceInd::Disconnect(frame)))
     }
 
+    #[allow(dead_code)] // Not wired into handle_event yet.
     async fn send_data_A7(
         &mut self,
         mut frame: Frame,
@@ -436,7 +443,8 @@ impl Connection {
         Ok(())
     }
 
-    async fn confirm_data_A8(&mut self, frame: Frame) -> Result<(), FrameError> {
+    #[allow(dead_code)] // Not wired into handle_event yet.
+    async fn confirm_data_A8(&mut self, _frame: Frame) -> Result<(), FrameError> {
         // Stop ACK timer
         self.seq_no_send = next_seq(self.seq_no_send);
         // Send CON
@@ -444,6 +452,7 @@ impl Connection {
         Ok(())
     }
 
+    #[allow(dead_code)] // Not wired into handle_event yet.
     async fn repeat_data_A9(&mut self, network: &NetworkLayer) -> Result<(), FrameError> {
         let stored_frame = Frame::try_from(unwrap!(self.stored_frame.as_ref()))?;
         network
