@@ -30,7 +30,7 @@ impl NetworkLayer {
     }
 
     pub fn receive(&self, frame: Frame) -> Option<NetworkServiceInd> {
-        match self.data_link.receive(frame) {
+        match self.data_link.receive(frame)? {
             DataServiceInd::Data(frame) => match frame.dst_addr() {
                 Address::Individual(_) => Some(NetworkServiceInd::DataIndividual(frame)),
                 Address::Group(addr) if addr == GroupAddress::new(0) => {

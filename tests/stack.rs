@@ -278,3 +278,20 @@ fn connection_oriented_data_is_acked() {
         assert_eq!(d.sim.transmit(true).await, with_checksum(&expected));
     });
 }
+
+#[test]
+fn connection_to_another_device_is_ignored() {
+    const DEVICE: [u8; 2] = [0x11, 0x05];
+    Device::run(&[], &[], |d| async move {
+        d.sim
+            .bus_receive(&[0xB0, PEER[0], PEER[1], DEVICE[0], DEVICE[1], 0x60, 0x80])
+            .await;
+        d.sim
+            .bus_receive(&[
+                0xB0, PEER[0], PEER[1], DEVICE[0], DEVICE[1], 0x61, 0x43, 0x00,
+            ])
+            .await;
+        settle().await;
+        assert_eq!(d.sim.host_bytes_now(), []);
+    });
+}
