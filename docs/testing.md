@@ -43,7 +43,7 @@ Async code runs on `futures-executor`'s `block_on`, with embassy-time's `std` ti
 | `data_point.rs` | DPT value types and encode/decode round trips. |
 | `group_object.rs` | Descriptor bit layout, value type sizes, value storage, the communication flags (transmit request, confirmation, read requests, read on init) and the C/R/W/T/U checks. |
 | `group_address_table.rs`, `group_object_association_table.rs` | GA ↔ TSAP lookup, unsorted tables rejected, TSAP fan-out to ASAPs, sending association. |
-| `transport_layer.rs` | TPDU classification, GA ↔ TSAP on receive and send, and the connection state machine (connect, ACK, repeats, sequence-number wrap, rejecting a second connection, disconnect). |
+| `transport_layer.rs` | TPDU classification, GA ↔ TSAP on receive and send, and the Style 1 connection state machine: receiving (ACK, repeats, T_NAK on a wrong sequence number, sequence-number wrap, rejecting other devices and PDUs without a connection, closing on unexpected T_ACK/T_NAK, connection timeout) and sending (T_Data_Connected.req and its confirmation, repetition on T_NAK and on acknowledge timeout, disconnect after three repetitions). Timeouts are shortened under `cfg(test)`. |
 
 `src/test_util.rs` holds the shared helpers. `StackHarness` builds the real data link, network and transport layers on a private `Bus`, with a group address table holding 1/1/98, and stands in for the driver: `inject()` delivers a received telegram, and every frame the stack sends is recorded (`sent()`) and confirmed with L_Data.con(Ok). `receive(&tl)` runs the transport layer until it indicates something. `group_objects(descriptors)` builds a `GroupObjects` on leaked buffers.
 
