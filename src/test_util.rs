@@ -70,7 +70,7 @@ impl StackHarness {
                 let frame = self.bus.bus_tx.receive().await;
                 let data = frame.data();
                 self.sent.send(data[..data.len() - 1].to_vec()).await;
-                self.bus.con.signal(ConStatus::Ok);
+                self.bus.con.signal((frame, ConStatus::Ok));
             }
         };
         match select(body, driver).await {

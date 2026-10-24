@@ -419,8 +419,8 @@ impl Connection {
         frame.set_hop_count(7);
         frame.set_tpci(TpciBits::Six, 0x10);
         frame.set_tpci_seq(self.seq_no_send);
-        self.stored_frame = Some(Frame::try_from(&frame)?);
-        network.send(NetworkServiceReq::DataIndividual(frame)).await;
+        let (frame, _) = network.send(NetworkServiceReq::DataIndividual(frame)).await;
+        self.stored_frame = Some(frame);
         self.rep_count = 0;
         self.restart_connection_timeout();
         // Start ACK timer?
@@ -438,10 +438,9 @@ impl Connection {
 
     #[allow(dead_code)]
     async fn repeat_data_A9(&mut self, network: &NetworkLayer) -> Result<(), FrameError> {
-        let stored_frame = Frame::try_from(unwrap!(self.stored_frame.as_ref()))?;
-        network
-            .send(NetworkServiceReq::DataIndividual(stored_frame))
-            .await;
+        let frame = unwrap!(self.stored_frame.take());
+        let (frame, _) = network.send(NetworkServiceReq::DataIndividual(frame)).await;
+        self.stored_frame = Some(frame);
         self.rep_count += 1;
         self.restart_connection_timeout();
         // Start ACK timer

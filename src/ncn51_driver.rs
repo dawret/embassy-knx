@@ -14,19 +14,18 @@ use embedded_io_async::{ErrorKind, Read, Write};
 // The payloads are only for logging, and `Debug` doesn't count as a read.
 #[cfg_attr(not(feature = "defmt"), allow(dead_code))]
 enum TransferError {
-    TimeoutError(usize),
-    ReadError(ErrorKind),
-    FrameError(FrameError),
-    InvalidData(u8),
+    Timeout(usize),
+    Io(ErrorKind),
+    Frame(FrameError),
 }
 
 fn io_error<E: embedded_io_async::Error>(err: E) -> TransferError {
-    TransferError::ReadError(err.kind())
+    TransferError::Io(err.kind())
 }
 
 impl From<FrameError> for TransferError {
     fn from(err: FrameError) -> Self {
-        TransferError::FrameError(err)
+        TransferError::Frame(err)
     }
 }
 
@@ -72,7 +71,14 @@ enum AckTypes {
 
 const CHANNEL_SIZE: usize = 8;
 const TX_CHUNK: usize = 64;
+const L_DATA_CON: u8 = 0x0B;
+const L_DATA_CON_MASK: u8 = 0x7F;
+const REPEAT_FLAG: u8 = 0x20;
 pub static CTRL_CHANNEL: Channel<CriticalSectionRawMutex, CtrlMsg, CHANNEL_SIZE> = Channel::new();
+
+fn is_echo_header(header: &[u8], tx: &[u8]) -> bool {
+    (header[0] ^ tx[0]) & !REPEAT_FLAG == 0 && header[1..] == tx[1..header.len()]
+}
 
 pub struct NCN51Driver<U, L> {
     uart: U,
@@ -82,6 +88,8 @@ pub struct NCN51Driver<U, L> {
 
 impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
     const BUS_SILENCE_US: u64 = 2600;
+    // Up to 7 attempts (NACK + BUSY repetitions) of a 263-octet frame, each about 400 ms.
+    const CON_TIMEOUT_MS: u64 = 3000;
     const FRAME_TYPE_MASK: u8 = 0xd3;
     const FRAME_TYPE_STD: u8 = 0x90;
     const FRAME_TYPE_EXT: u8 = 0x10;
@@ -105,7 +113,7 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
 
     async fn read_byte(&mut self, buf: &mut [u8]) -> Result<(), TransferError> {
         match self.uart.read(&mut buf[..1]).await.map_err(io_error)? {
-            0 => Err(TransferError::ReadError(ErrorKind::BrokenPipe)),
+            0 => Err(TransferError::Io(ErrorKind::BrokenPipe)),
             _ => Ok(()),
         }
     }
@@ -116,58 +124,57 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
             let bus = self.bus;
             match select(self.read_byte(&mut buf), bus.bus_tx.ready_to_receive()).await
             {
-                Either::First(ret) => {
-                    if let Err(e) = ret {
-                        info!("Reception error: {}", e);
-                    } else if self.is_frame_start(buf[0]) {
-                        match self.receive_frame(buf[0]).await {
-                            Ok(frame) => {
-                                let _ = self.led.toggle();
-                                self.bus.bus_rx.send(frame).await;
-                            }
-                            Err(e) => {
-                                info!("Reception error: {}", e);
-                                self.read_with_timeout_ignore_errors().await;
-                                //TODO: Handle NACK
-
-                                /*if let Err(e) = self.ack(AckTypes::NACK).await {
-                                    info!("Failed to send NACK: {}", e);
-                                }*/
-                            }
-                        }
-                    } else {
-                        info!("Unexpected byte: {:x}", buf[0]);
-                    }
+                Either::First(Err(e)) => info!("Reception error: {}", e),
+                Either::First(Ok(())) if self.is_frame_start(buf[0]) => {
+                    self.receive(buf[0], None).await
                 }
+                Either::First(Ok(())) => info!("Unexpected byte: {:x}", buf[0]),
                 Either::Second(_) => {
-                    let frame = self.bus.bus_tx.receive().await;
-                    match self.send_frame(frame).await {
-                        Ok(con_status) => {
-                            self.bus.con.signal(con_status);
-                        }
+                    let mut frame = self.bus.bus_tx.receive().await;
+                    let status = match self.send_frame(&mut frame).await {
+                        Ok(status) => status,
                         Err(e) => {
                             error!("Transmission error: {}", e);
-                            self.bus.con.signal(ConStatus::NotOk);
+                            ConStatus::NotOk
                         }
-                    }
+                    };
+                    self.bus.con.signal((frame, status));
                 }
             }
         }
     }
 
-    async fn send_frame(&mut self, mut frame: Frame) -> Result<ConStatus, TransferError> {
-        let data = frame.data();
-        let len = data.len();
-        let checksum = frame.checksum();
+    /// Passes the frame that starts with `ctrl` up, unless it is an echo of `tx`.
+    async fn receive(&mut self, ctrl: u8, tx: Option<&Frame>) {
+        match self.receive_frame(ctrl, tx).await {
+            Ok(Some(frame)) => {
+                let _ = self.led.toggle();
+                self.bus.bus_rx.send(frame).await;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                info!("Reception error: {}", e);
+                self.read_with_timeout_ignore_errors().await;
+                //TODO: Handle NACK
+
+                /*if let Err(e) = self.ack(AckTypes::NACK).await {
+                    info!("Failed to send NACK: {}", e);
+                }*/
+            }
+        }
+    }
+
+    async fn send_frame(&mut self, frame: &mut Frame) -> Result<ConStatus, TransferError> {
+        let len = frame.data().len();
+        frame.mut_data()[len - 1] = frame.checksum();
         let mut buf = [0; TX_CHUNK];
         let mut n = 0;
-        for i in 0..len {
-            let (cmd, octet) = match i {
-                0 => (commands::U_L_DATA_START_REQ, data[0]),
-                i if i == len - 1 => (commands::U_L_DATA_END_REQ | i as u8, checksum),
-                i => (commands::U_L_DATA_CONT_REQ | i as u8, data[i]),
+        for (i, &octet) in frame.data().iter().enumerate() {
+            buf[n] = match i {
+                0 => commands::U_L_DATA_START_REQ,
+                i if i == len - 1 => commands::U_L_DATA_END_REQ | i as u8,
+                i => commands::U_L_DATA_CONT_REQ | i as u8,
             };
-            buf[n] = cmd;
             buf[n + 1] = octet;
             n += 2;
             if n == buf.len() || i == len - 1 {
@@ -175,64 +182,104 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
                 n = 0;
             }
         }
-        let mut cmd = [0; 1];
-        self.read_with_timeout(frame.mut_data()).await?;
-        self.read_byte(&mut cmd).await?;
-        if cmd[0] & 0x7f != 0xb {
-            error!("Invalid L_Data.con: {:x}", cmd[0]);
-            return Err(TransferError::InvalidData(cmd[0]));
-        }
-        let con_status = if (cmd[0] >> 7) != 0 {
-            ConStatus::Ok
-        } else {
-            ConStatus::NotOk
-        };
-        Ok(con_status)
+        self.confirmation(frame)
+            .with_timeout(Duration::from_millis(Self::CON_TIMEOUT_MS))
+            .await
+            .map_err(|_| TransferError::Timeout(0))?
     }
 
-    async fn receive_frame_int<T: FrameWriter>(&mut self, ctrl: u8) -> Result<T, TransferError> {
+    /// The transceiver echoes every attempt to send `tx`. Frames of devices that win the
+    /// arbitration arrive in between.
+    async fn confirmation(&mut self, tx: &Frame) -> Result<ConStatus, TransferError> {
+        loop {
+            let mut buf = [0; 1];
+            self.read_byte(&mut buf).await?;
+            match buf[0] {
+                b if b & L_DATA_CON_MASK == L_DATA_CON => {
+                    return Ok(if b & 0x80 != 0 {
+                        ConStatus::Ok
+                    } else {
+                        ConStatus::NotOk
+                    });
+                }
+                b if self.is_frame_start(b) => self.receive(b, Some(tx)).await,
+                b => info!("Unexpected byte: {:x}", b),
+            }
+        }
+    }
+
+    async fn receive_frame_int<T: FrameWriter>(
+        &mut self,
+        ctrl: u8,
+        tx: Option<&[u8]>,
+    ) -> Result<Option<T>, TransferError> {
+        let mut header = [0; ExtendedFrame::HEADER_LENGTH];
+        let header = &mut header[..T::HEADER_LENGTH];
+        header[0] = ctrl;
+        self.read_with_timeout(&mut header[1..]).await?;
+        if let Some(tx) = tx.filter(|tx| is_echo_header(header, tx)) {
+            self.receive_echo(&tx[header.len()..]).await?;
+            return Ok(None);
+        }
         let mut frame = T::new(T::MAX_FRAME_SIZE)?;
-        frame.mut_data()[0] = ctrl;
-        let bytes_read = 1 + self
-            .read_with_timeout(&mut frame.mut_data()[1..T::HEADER_LENGTH])
-            .await?;
+        frame.mut_data()[..header.len()].copy_from_slice(header);
         self.ack_if_addressed(&frame.dst_addr()).await?;
-        let bytes_read = bytes_read
+        let bytes_read = header.len()
             + match self
                 .read_with_timeout(&mut frame.mut_data()[T::HEADER_LENGTH..])
                 .await
             {
                 Ok(bytes) => Ok(bytes),
-                Err(TransferError::TimeoutError(bytes)) => Ok(bytes),
+                Err(TransferError::Timeout(bytes)) => Ok(bytes),
                 Err(e) => Err(e),
             }?;
         if bytes_read < T::MIN_FRAME_SIZE
             || bytes_read > T::MAX_FRAME_SIZE
             || bytes_read != frame.length()
         {
-            return Err(TransferError::FrameError(FrameError::InvalidLength));
+            return Err(TransferError::Frame(FrameError::InvalidLength));
         }
         // The checksum makes the XOR over all octets, including itself, 0xFF.
         if frame.data()[..bytes_read].iter().fold(0, |acc, b| acc ^ b) != 0xFF {
-            return Err(TransferError::FrameError(FrameError::Checksum));
+            return Err(TransferError::Frame(FrameError::Checksum));
         }
         frame.set_length(bytes_read)?;
 
-        Ok(frame)
+        Ok(Some(frame))
     }
 
-    async fn receive_frame(&mut self, ctrl: u8) -> Result<Frame, TransferError> {
+    async fn receive_frame(
+        &mut self,
+        ctrl: u8,
+        tx: Option<&Frame>,
+    ) -> Result<Option<Frame>, TransferError> {
+        let tx = tx.map(Frame::data);
         match ctrl & Self::FRAME_TYPE_MASK {
             Self::FRAME_TYPE_STD => {
-                let frame = self.receive_frame_int(ctrl).await?;
-                Ok(Frame::Standard(frame))
+                Ok(self.receive_frame_int(ctrl, tx).await?.map(Frame::Standard))
             }
             Self::FRAME_TYPE_EXT => {
-                let frame = self.receive_frame_int(ctrl).await?;
-                Ok(Frame::Extended(frame))
+                Ok(self.receive_frame_int(ctrl, tx).await?.map(Frame::Extended))
             }
             _ => unreachable!(),
         }
+    }
+
+    /// `expected` ends with the checksum octet, which differs in repetitions.
+    async fn receive_echo(&mut self, expected: &[u8]) -> Result<(), TransferError> {
+        let (body, _) = expected.split_at(expected.len() - 1);
+        let mut buf = [0; 16];
+        let mut matches = true;
+        for chunk in body.chunks(buf.len()) {
+            let echo = &mut buf[..chunk.len()];
+            self.read_with_timeout(echo).await?;
+            matches &= echo == chunk;
+        }
+        self.read_with_timeout(&mut buf[..1]).await?;
+        if !matches {
+            warn!("Echo differs from the sent frame");
+        }
+        Ok(())
     }
 
     async fn ack_if_addressed(&mut self, dst_addr: &Address) -> Result<(), TransferError> {
@@ -255,10 +302,10 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
                 .read(&mut buf[read..])
                 .with_timeout(Duration::from_micros(Self::BUS_SILENCE_US))
                 .await
-                .map_err(|_| TransferError::TimeoutError(read))?
+                .map_err(|_| TransferError::Timeout(read))?
                 .map_err(io_error)?;
             if n == 0 {
-                return Err(TransferError::ReadError(ErrorKind::BrokenPipe));
+                return Err(TransferError::Io(ErrorKind::BrokenPipe));
             }
             read += n;
         }

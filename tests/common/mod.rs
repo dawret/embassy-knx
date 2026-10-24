@@ -99,6 +99,13 @@ impl Ncn5130Sim {
     }
 
     pub async fn transmit(&self, con_ok: bool) -> Vec<u8> {
+        let telegram = self.host_request().await;
+        self.echo_and_confirm(&telegram, con_ok);
+        telegram
+    }
+
+    /// Decodes one U_L_DataStart/Continue/End request; returns the telegram with its checksum.
+    pub async fn host_request(&self) -> Vec<u8> {
         assert_eq!(self.host_byte().await, 0x80, "expected U_L_DataStart");
         let mut telegram = vec![self.host_byte().await];
         loop {
@@ -116,10 +123,20 @@ impl Ncn5130Sim {
                 _ => panic!("unexpected command {cmd:#04X}"),
             }
         }
-        self.send_to_host(&telegram);
-        self.send_to_host(&[if con_ok { 0x8B } else { 0x0B }]);
         telegram
     }
+
+    pub fn echo_and_confirm(&self, telegram: &[u8], con_ok: bool) {
+        self.send_to_host(telegram);
+        self.send_to_host(&[if con_ok { 0x8B } else { 0x0B }]);
+    }
+}
+
+/// The telegram as the transceiver repeats it: repeat bit cleared, new checksum.
+pub fn repetition(telegram: &[u8]) -> Vec<u8> {
+    let mut repeated = telegram[..telegram.len() - 1].to_vec();
+    repeated[0] &= !0x20;
+    with_checksum(&repeated)
 }
 
 pub struct SimUart<'a> {

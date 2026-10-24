@@ -246,8 +246,10 @@ pub trait FrameReader {
         &self.data()[Self::APCI_OFFSET + 1..self.length()]
     }
 
+    /// Over all octets but the last, which holds the checksum.
     fn checksum(&self) -> u8 {
-        !self.data().iter().fold(0, |acc, &v| acc ^ v)
+        let data = self.data();
+        !data[..data.len() - 1].iter().fold(0, |acc, &v| acc ^ v)
     }
 
     #[cfg(feature = "defmt")]
@@ -402,15 +404,6 @@ impl defmt::Format for StandardFrame {
     }
 }
 
-impl TryFrom<&StandardFrame> for StandardFrame {
-    type Error = FrameError;
-    fn try_from(value: &StandardFrame) -> Result<Self, Self::Error> {
-        let mut new_frame = StandardFrame::new(value.length())?;
-        new_frame.0.clone_from_slice(value.data());
-        Ok(new_frame)
-    }
-}
-
 pub struct ExtendedFrame(Box<FRAME_POOL>);
 
 impl FrameReader for ExtendedFrame {
@@ -464,15 +457,6 @@ impl FrameWriter for ExtendedFrame {
 impl defmt::Format for ExtendedFrame {
     fn format(&self, fmt: defmt::Formatter) {
         FrameReader::format(self, fmt);
-    }
-}
-
-impl TryFrom<&ExtendedFrame> for ExtendedFrame {
-    type Error = FrameError;
-    fn try_from(value: &ExtendedFrame) -> Result<Self, Self::Error> {
-        let mut new_frame = ExtendedFrame::new(value.length())?;
-        new_frame.0.clone_from_slice(value.data());
-        Ok(new_frame)
     }
 }
 
@@ -649,16 +633,6 @@ impl From<StandardFrame> for Frame {
 impl From<ExtendedFrame> for Frame {
     fn from(value: ExtendedFrame) -> Self {
         Self::Extended(value)
-    }
-}
-
-impl TryFrom<&Frame> for Frame {
-    type Error = FrameError;
-    fn try_from(value: &Frame) -> Result<Self, Self::Error> {
-        match value {
-            Frame::Standard(f) => StandardFrame::try_from(f).map(|f| f.into()),
-            Frame::Extended(f) => ExtendedFrame::try_from(f).map(|f| f.into()),
-        }
     }
 }
 

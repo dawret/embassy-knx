@@ -16,8 +16,9 @@ pub enum ConStatus {
 pub struct Bus {
     pub bus_rx: Channel<CriticalSectionRawMutex, Frame, BUS_CHANNEL_SIZE>,
     pub bus_tx: Channel<CriticalSectionRawMutex, Frame, BUS_CHANNEL_SIZE>,
-    /// L_Data.con for the last frame taken from `bus_tx`.
-    pub con: Signal<CriticalSectionRawMutex, ConStatus>,
+    /// L_Data.con: the last frame taken from `bus_tx`, returned unchanged apart from its
+    /// checksum octet.
+    pub con: Signal<CriticalSectionRawMutex, (Frame, ConStatus)>,
 }
 
 impl Bus {

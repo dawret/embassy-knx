@@ -11,6 +11,14 @@ fn t_connect(dst: [u8; 2]) -> [u8; 7] {
     [0xB0, 0x11, 0xFA, dst[0], dst[1], 0x60, 0x80]
 }
 
+/// A_GroupValue_Response(0x1234) from 1.1.120 to 1/1/98.
+const GROUP_VALUE_RESPONSE: [u8; 10] = [0xB4, 0x11, 0x78, 0x09, 0x62, 0xE3, 0x00, 0x40, 0x12, 0x34];
+
+/// Frames built by the stack carry an empty checksum slot.
+fn tx_frame(telegram: &[u8]) -> Frame {
+    Frame::from_slice(&[telegram, &[0]].concat()).unwrap()
+}
+
 fn setup() -> (&'static Ncn5130Sim, &'static Bus, NCN51Driver<SimUart<'static>, NoLed>) {
     init_pool();
     let sim = leak(Ncn5130Sim::new());
@@ -100,18 +108,16 @@ fn skips_unexpected_bytes() {
 #[test]
 fn transmits_frame_and_reports_confirmation() {
     let (sim, bus, driver) = setup();
-    // Frames built by the stack carry an empty checksum slot.
     let telegram = [0xB0, 0x11, 0x78, 0x11, 0xFA, 0x70, 0xC2];
-    let frame = || Frame::from_slice(&[telegram.as_slice(), &[0]].concat()).unwrap();
     run(with_background(
         async {
-            bus.bus_tx.send(frame()).await;
+            bus.bus_tx.send(tx_frame(&telegram)).await;
             assert_eq!(sim.transmit(true).await, with_checksum(&telegram));
-            assert_eq!(bus.con.wait().await, ConStatus::Ok);
+            assert_eq!(bus.con.wait().await.1, ConStatus::Ok);
 
-            bus.bus_tx.send(frame()).await;
+            bus.bus_tx.send(tx_frame(&telegram)).await;
             assert_eq!(sim.transmit(false).await, with_checksum(&telegram));
-            assert_eq!(bus.con.wait().await, ConStatus::NotOk);
+            assert_eq!(bus.con.wait().await.1, ConStatus::NotOk);
         },
         driver.run(),
     ));
@@ -120,14 +126,66 @@ fn transmits_frame_and_reports_confirmation() {
 #[test]
 fn transmits_standard_frame_in_one_write() {
     let (sim, bus, driver) = setup();
-    let telegram = [0xB4, 0x11, 0x78, 0x09, 0x62, 0xE3, 0x00, 0x40, 0x12, 0x34];
-    let frame = Frame::from_slice(&[telegram.as_slice(), &[0]].concat()).unwrap();
     run(with_background(
         async {
-            bus.bus_tx.send(frame).await;
-            assert_eq!(sim.transmit(true).await, with_checksum(&telegram));
-            assert_eq!(bus.con.wait().await, ConStatus::Ok);
+            bus.bus_tx.send(tx_frame(&GROUP_VALUE_RESPONSE)).await;
+            assert_eq!(sim.transmit(true).await, with_checksum(&GROUP_VALUE_RESPONSE));
+            assert_eq!(bus.con.wait().await.1, ConStatus::Ok);
             assert_eq!(sim.host_writes(), 1);
+        },
+        driver.run(),
+    ));
+}
+
+#[test]
+fn confirmation_returns_the_sent_frame() {
+    let (sim, bus, driver) = setup();
+    run(with_background(
+        async {
+            bus.bus_tx.send(tx_frame(&GROUP_VALUE_RESPONSE)).await;
+            sim.transmit(true).await;
+            let (frame, status) = bus.con.wait().await;
+            assert_eq!(status, ConStatus::Ok);
+            assert_eq!(frame.data(), with_checksum(&GROUP_VALUE_RESPONSE));
+            settle().await;
+            assert_eq!(sim.host_bytes_now(), [], "own echo must not be acked");
+        },
+        driver.run(),
+    ));
+}
+
+#[test]
+fn confirms_after_repetitions() {
+    let (sim, bus, driver) = setup();
+    run(with_background(
+        async {
+            bus.bus_tx.send(tx_frame(&GROUP_VALUE_RESPONSE)).await;
+            let telegram = sim.host_request().await;
+            sim.send_to_host(&telegram);
+            sim.send_to_host(&repetition(&telegram));
+            sim.echo_and_confirm(&repetition(&telegram), true);
+            let (frame, status) = bus.con.wait().await;
+            assert_eq!(status, ConStatus::Ok);
+            assert_eq!(frame.data(), telegram);
+        },
+        driver.run(),
+    ));
+}
+
+#[test]
+fn receives_frame_while_waiting_for_confirmation() {
+    let (sim, bus, driver) = setup();
+    run(with_background(
+        async {
+            bus.bus_tx.send(tx_frame(&GROUP_VALUE_RESPONSE)).await;
+            let telegram = sim.host_request().await;
+            sim.bus_receive(&GROUP_VALUE_READ).await;
+            sim.expect_ack().await;
+            sim.echo_and_confirm(&telegram, true);
+            assert_eq!(bus.bus_rx.receive().await.data(), with_checksum(&GROUP_VALUE_READ));
+            let (frame, status) = bus.con.wait().await;
+            assert_eq!(status, ConStatus::Ok);
+            assert_eq!(frame.data(), telegram);
         },
         driver.run(),
     ));

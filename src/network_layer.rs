@@ -1,3 +1,4 @@
+use crate::bus::ConStatus;
 use crate::data_link_layer::{DataLinkLayer, DataServiceInd};
 use crate::frame::*;
 
@@ -47,7 +48,7 @@ impl NetworkLayer {
         }
     }
 
-    pub async fn send(&self, req: NetworkServiceReq) {
+    pub async fn send(&self, req: NetworkServiceReq) -> (Frame, ConStatus) {
         match req {
             NetworkServiceReq::DataGroup(frame) => self.data_link.send(frame).await,
             NetworkServiceReq::DataIndividual(frame) => self.data_link.send(frame).await,

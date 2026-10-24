@@ -23,10 +23,10 @@ impl DataLinkLayer {
         Self { bus }
     }
 
-    pub async fn send(&self, frame: Frame) {
+    pub async fn send(&self, frame: Frame) -> (Frame, ConStatus) {
         self.bus.con.reset();
         self.bus.bus_tx.send(frame).await;
-        let _con = self.bus.con.wait().await;
+        self.bus.con.wait().await
     }
 
     pub async fn receive(&self) -> DataServiceInd {
