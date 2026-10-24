@@ -17,7 +17,7 @@ use data_point::*;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
-use embassy_nrf::peripherals;
+use embassy_nrf::{peripherals, Peri};
 use embassy_sync::channel::Channel;
 use ncn51_driver::NCN51Driver;
 
@@ -77,8 +77,8 @@ async fn main(spawner: Spawner) {
         SERVICE_CHANNEL_RX.sender(),
     );
 
-    spawner.spawn(uart_task(driver)).unwrap();
-    spawner.spawn(application_task(application)).unwrap();
+    spawner.spawn(unwrap!(uart_task(driver)));
+    spawner.spawn(unwrap!(application_task(application)));
 
     loop {
         let ind = SERVICE_CHANNEL_RX.receive().await;

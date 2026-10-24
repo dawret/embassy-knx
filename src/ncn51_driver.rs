@@ -15,7 +15,7 @@ use heapless::Vec;
 use heapless::{box_pool, pool::boxed::BoxBlock};
 use static_cell::StaticCell;
 
-type Serial = uarte::Uarte<'static, SERIAL0>;
+type Serial = uarte::Uarte<'static>;
 
 //TODO: Add "bytes_read" information
 #[derive(Format)]
@@ -115,9 +115,9 @@ impl NCN51Driver {
     pub fn new(resources: UartResources) -> Self {
         let led_rx = Output::new(resources.led, Level::Low, OutputDrive::Standard);
         let mut config = uarte::Config::default();
-        config.parity = uarte::Parity::INCLUDED;
-        config.baudrate = uarte::Baudrate::BAUD38400;
-        let uart = uarte::Uarte::new(resources.serial, Irqs, resources.rx, resources.tx, config);
+        config.parity = uarte::Parity::Included;
+        config.baudrate = uarte::Baudrate::Baud38400;
+        let uart = uarte::Uarte::new(resources.serial, resources.rx, resources.tx, Irqs, config);
 
         static FRAME_BUFFER: StaticCell<[BoxBlock<Vec<u8, MAX_FRAME_SIZE>>; CHANNEL_SIZE]> =
             StaticCell::new();
