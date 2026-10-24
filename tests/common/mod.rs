@@ -26,6 +26,10 @@ pub fn leak<T>(value: T) -> &'static T {
     Box::leak(Box::new(value))
 }
 
+pub fn leak_slice<T: Clone>(values: &[T]) -> &'static [T] {
+    Box::leak(values.to_vec().into_boxed_slice())
+}
+
 pub fn run<F: Future>(fut: F) -> F::Output {
     futures_executor::block_on(fut.with_timeout(Duration::from_secs(2))).expect("test timed out")
 }

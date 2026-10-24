@@ -27,24 +27,23 @@ impl NetworkLayer {
         }
     }
 
-    pub async fn receive(&self) -> NetworkServiceInd {
-        loop {
-            match self.data_link.receive().await {
-                DataServiceInd::Data(frame) => match frame.dst_addr() {
-                    Address::Individual(_) => return NetworkServiceInd::DataIndividual(frame),
-                    Address::Group(ref addr) => {
-                        if addr == &GroupAddress::new(0) {
-                            return NetworkServiceInd::DataBroadcast(frame);
-                        } else {
-                            return NetworkServiceInd::DataGroup(frame);
-                        }
-                    }
-                },
-                DataServiceInd::SystemBroadcast(frame) => {
-                    return NetworkServiceInd::DataSystemBroadcast(frame)
+    pub async fn next_frame(&self) -> Frame {
+        self.data_link.next_frame().await
+    }
+
+    pub fn receive(&self, frame: Frame) -> Option<NetworkServiceInd> {
+        match self.data_link.receive(frame) {
+            DataServiceInd::Data(frame) => match frame.dst_addr() {
+                Address::Individual(_) => Some(NetworkServiceInd::DataIndividual(frame)),
+                Address::Group(addr) if addr == GroupAddress::new(0) => {
+                    Some(NetworkServiceInd::DataBroadcast(frame))
                 }
-                _ => {}
+                Address::Group(_) => Some(NetworkServiceInd::DataGroup(frame)),
+            },
+            DataServiceInd::SystemBroadcast(frame) => {
+                Some(NetworkServiceInd::DataSystemBroadcast(frame))
             }
+            _ => None,
         }
     }
 

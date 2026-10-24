@@ -12,14 +12,16 @@ A KNX TP1 device stack for embedded boards, written in `no_std` Rust on [embassy
 
 | File | Role |
 |---|---|
-| `firmware/src/main.rs` | Startup, peripherals and `BufferedUarte`, frame pool and `Bus` statics, task spawning, placeholder user application loop |
+| `firmware/src/main.rs` | Startup, peripherals and `BufferedUarte`, frame pool and `Bus` statics, group address/association/group object configuration, task spawning, placeholder user application loop |
 | `src/lib.rs`, `src/fmt.rs` | Crate root; logging macros that forward to `defmt` or compile to nothing |
 | `src/bus.rs` | `Bus`: the channels between driver and stack (`bus_rx`, `bus_tx`) and the L_Data.con signal |
 | `src/ncn51_driver.rs` | NCN5130 UART driver, generic over `embedded_io_async`: frame RX/TX, ACK, L_Data.con |
 | `src/frame.rs` | Frame pools (small and large blocks), `Frame` and its field accessors |
-| `src/data_link_layer.rs`, `network_layer.rs`, `transport_layer.rs`, `application_layer.rs` | KNX layers 2–7, each owning the layer below it by value, all running in one task |
-| `src/data_point.rs` | Datapoint type (DPT) encoding |
-| `src/group_object*.rs`, `group_address_table.rs`, `interface_object_server.rs` | Stubs or drafts, not in the module tree |
+| `src/data_link_layer.rs`, `network_layer.rs`, `transport_layer.rs`, `application_layer.rs` | KNX layers 2–7, each owning the layer below it by value, all running in one task. The application layer is the group object server and runs the cancel-safe event loop |
+| `src/group_object.rs` | `GroupObjects`: descriptors, values and communication flags; the interface between application and stack |
+| `src/group_address_table.rs`, `group_object_association_table.rs` | GA ↔ TSAP and TSAP ↔ ASAP tables |
+| `src/data_point.rs` | Datapoint type (DPT) codecs (`Dpt`) |
+| `src/interface_object_server.rs` | Draft, not in the module tree |
 | `src/test_util.rs`, `tests/` | Host test helpers (`StackHarness`, `Ncn5130Sim`) and integration tests |
 
 ## Constraints

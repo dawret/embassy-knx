@@ -1,4 +1,4 @@
-use crate::data_point::{DataPoint, DataPointAccess, DataPointLength};
+use crate::group_object::ValueType;
 use heapless::{
     pool::boxed::{Box, BoxBlock},
     Vec,
@@ -140,10 +140,13 @@ impl defmt::Format for IndividualAddress {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GroupAddress(u16);
 
 impl GroupAddress {
+    pub const fn get(self) -> u16 {
+        self.0
+    }
     pub const fn from_parts(n1: u8, n2: u8, n3: u8) -> Self {
         GroupAddress((n1 as u16) << 11 | (n2 as u16) << 8 | n3 as u16)
     }
@@ -212,6 +215,14 @@ pub enum ApciBits {
     Ten = 8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum GroupService {
+    Read = 0,
+    Response = 1,
+    Write = 2,
+}
+
 enum Buf {
     Small(Box<SMALL_POOL>),
     Large(Box<LARGE_POOL>),
@@ -266,30 +277,33 @@ impl Frame {
         Ok(frame)
     }
 
-    pub fn from_datapoint(datapoint: &DataPoint) -> FrameResult<Self> {
-        let size = match datapoint.length() {
-            DataPointLength::Bit(n) => {
-                if n < 6 {
-                    0
-                } else {
-                    1
-                }
-            }
-            DataPointLength::Byte(n) => n,
-        };
-        let frame_type = if datapoint.byte_length() > 14 {
+    pub fn group_read(priority: Priority) -> FrameResult<Self> {
+        Self::group_value(GroupService::Read, priority, ValueType::bits(1), &[0])
+    }
+
+    /// `value` as stored in a group object; values of up to 6 bits share the octet with the
+    /// low APCI bits.
+    pub fn group_value(
+        service: GroupService,
+        priority: Priority,
+        value_type: ValueType,
+        value: &[u8],
+    ) -> FrameResult<Self> {
+        let octets = if value_type.is_short() { 0 } else { value.len() };
+        let frame_type = if octets > FrameType::Standard.max_length() - FrameType::Standard.min_length() - 1 {
             FrameType::Extended
         } else {
             FrameType::Standard
         };
-        let mut frame = Self::new(frame_type, frame_type.header_length() + 1 + size + 1)?;
-        // Short values share the octet with the low APCI bits, longer ones follow it.
+        let mut frame = Self::new(frame_type, frame_type.min_length() + 1 + octets)?;
+        frame.set_priority(priority);
+        frame.set_apci(ApciBits::Four, service as u16);
         let offset = frame.apci_offset() + 1;
-        let (offset, octets) = match size {
-            0 => (offset, 1),
-            n => (offset + 1, n),
-        };
-        datapoint.write(&mut frame.mut_data()[offset..offset + octets]);
+        if octets == 0 {
+            frame.set_bits(offset, 0x3F, value[0]);
+        } else {
+            frame.mut_data()[offset + 1..offset + 1 + octets].copy_from_slice(value);
+        }
         Ok(frame)
     }
 
@@ -405,8 +419,20 @@ impl Frame {
             ApciBits::Ten => apci,
         }
     }
+    pub fn group_service(&self) -> Option<GroupService> {
+        match self.apci(ApciBits::Four) {
+            0 => Some(GroupService::Read),
+            1 => Some(GroupService::Response),
+            2 => Some(GroupService::Write),
+            _ => None,
+        }
+    }
     pub fn apdu_data(&self) -> &[u8] {
-        &self.data()[self.apci_offset() + 1..self.length()]
+        let data = self.data();
+        &data[self.apci_offset() + 2..data.len() - 1]
+    }
+    pub fn short_data(&self) -> u8 {
+        self.data()[self.apci_offset() + 1] & 0x3F
     }
     /// Over all octets but the last, which holds the checksum.
     pub fn checksum(&self) -> u8 {
@@ -489,7 +515,6 @@ impl core::fmt::Debug for Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_point::{B1, U16, U8};
     use crate::test_util::{frame, init_pool, with_checksum};
 
     const GROUP_VALUE_READ: [u8; 8] = [0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE1, 0x00, 0x00];
@@ -659,23 +684,66 @@ mod tests {
     }
 
     #[test]
-    fn frame_from_short_datapoint() {
-        init_pool();
-        let f = Frame::from_datapoint(&DataPoint::B1(B1::new(true))).unwrap();
-        assert_eq!(f.length(), 9);
-        assert_eq!(f.data()[7] & 0x3F, 0x01);
+    fn apdu_data_excludes_apci_and_checksum() {
+        let f = frame(&[0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE3, 0x00, 0x40, 0x12, 0x34]);
+        assert_eq!(f.apdu_data(), [0x12, 0x34]);
+
+        let f = frame(&[0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE1, 0x00, 0x81]);
+        assert_eq!(f.apdu_data(), []);
+        assert_eq!(f.short_data(), 0x01);
+
+        let f = frame(&[0x3C, 0xE0, 0x11, 0x0A, 0x09, 0x62, 0x03, 0x00, 0x80, 0xA5, 0x5A]);
+        assert_eq!(f.apdu_data(), [0xA5, 0x5A]);
     }
 
     #[test]
-    fn frame_from_byte_datapoints() {
+    fn short_group_value_shares_the_apci_octet() {
         init_pool();
-        let f = Frame::from_datapoint(&DataPoint::U8(U8::new(0xA5))).unwrap();
-        assert_eq!(f.length(), 10);
-        assert_eq!(&f.data()[8..9], &[0xA5]);
+        let f = Frame::group_value(GroupService::Write, Priority::Low, ValueType::bits(1), &[1])
+            .unwrap();
+        assert_eq!(f.length(), 9);
+        assert_eq!(f.priority(), Priority::Low);
+        assert_eq!(f.group_service(), Some(GroupService::Write));
+        assert_eq!(f.short_data(), 0x01);
 
-        let f = Frame::from_datapoint(&DataPoint::U16(U16::new(0x1234))).unwrap();
+        let f = Frame::group_read(Priority::Normal).unwrap();
+        assert_eq!(f.length(), 9);
+        assert_eq!(f.group_service(), Some(GroupService::Read));
+        assert_eq!(f.short_data(), 0);
+    }
+
+    #[test]
+    fn group_values_of_whole_octets_follow_the_apci() {
+        init_pool();
+        let f = Frame::group_value(GroupService::Response, Priority::Low, ValueType::octets(1), &[0xA5])
+            .unwrap();
+        assert_eq!(f.length(), 10);
+        assert_eq!(f.group_service(), Some(GroupService::Response));
+        assert_eq!(f.apdu_data(), [0xA5]);
+
+        let f = Frame::group_value(GroupService::Write, Priority::Low, ValueType::bits(7), &[0x7F])
+            .unwrap();
+        assert_eq!(f.apdu_data(), [0x7F]);
+
+        let f = Frame::group_value(GroupService::Write, Priority::Low, ValueType::octets(2), &[0x12, 0x34])
+            .unwrap();
         assert_eq!(f.length(), 11);
-        assert_eq!(&f.data()[8..10], &[0x12, 0x34]);
+        assert_eq!(f.apdu_data(), [0x12, 0x34]);
+    }
+
+    #[test]
+    fn long_group_values_use_extended_frames() {
+        init_pool();
+        let f = Frame::group_value(GroupService::Write, Priority::Low, ValueType::octets(14), &[7; 14])
+            .unwrap();
+        assert_eq!(f.frame_type(), FrameType::Standard);
+        assert_eq!(f.length(), FrameType::Standard.max_length());
+
+        let f = Frame::group_value(GroupService::Write, Priority::Low, ValueType::octets(15), &[7; 15])
+            .unwrap();
+        assert_eq!(f.frame_type(), FrameType::Extended);
+        assert_eq!(f.group_service(), Some(GroupService::Write));
+        assert_eq!(f.apdu_data(), [7; 15]);
     }
 
     #[test]

@@ -1,108 +1,114 @@
-use crate::data_point::*;
-use crate::transport_layer::{TransportLayer, TransportServiceInd};
-use crate::{frame::*, transport_layer};
-use embassy_futures::select::{select, Either};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
-
-pub const SERVICE_CHANNEL_SIZE: usize = 4;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ApplicationServiceInd {
-    GroupValueRead(u8 /*ASAP */),
-}
-
-pub struct GroupReadResponse {
-    data: DataPoint,
-    #[allow(dead_code)]
-    asap: u8,
-    hop_count: u8,
-    priority: Priority,
-}
-
-impl GroupReadResponse {
-    pub fn new(asap: u8, data: DataPoint, priority: Priority) -> Self {
-        Self {
-            asap: asap,
-            data: data,
-            hop_count: 7,
-            priority: priority,
-        }
-    }
-
-    fn to_transport(self, tsap: u8) -> Result<transport_layer::DataGroupReq, FrameError> {
-        let mut frame = Frame::from_datapoint(&self.data)?;
-        frame.set_apci(ApciBits::Four, 0x1);
-        frame.set_priority(self.priority);
-        frame.set_hop_count(self.hop_count);
-        Ok(transport_layer::DataGroupReq::new(tsap, frame))
-    }
-}
-
-pub enum ApplicationServiceRes {
-    GroupValueRead(GroupReadResponse),
-}
+use crate::bus::ConStatus;
+use crate::frame::*;
+use crate::group_address_table::Tsap;
+use crate::group_object::{Asap, GroupObjects};
+use crate::group_object_association_table::AssociationTable;
+use crate::transport_layer::{at, TransportLayer, TransportServiceInd, TransportServiceReq};
+use embassy_futures::select::{select3, Either3};
 
 pub struct ApplicationLayer {
     transport: TransportLayer,
-    rx: Receiver<'static, CriticalSectionRawMutex, ApplicationServiceRes, SERVICE_CHANNEL_SIZE>,
-    tx: Sender<'static, CriticalSectionRawMutex, ApplicationServiceInd, SERVICE_CHANNEL_SIZE>,
+    associations: AssociationTable,
+    group_objects: &'static GroupObjects,
 }
 
 impl ApplicationLayer {
     pub fn new(
         transport: TransportLayer,
-        rx: Receiver<'static, CriticalSectionRawMutex, ApplicationServiceRes, SERVICE_CHANNEL_SIZE>,
-        tx: Sender<'static, CriticalSectionRawMutex, ApplicationServiceInd, SERVICE_CHANNEL_SIZE>,
+        associations: AssociationTable,
+        group_objects: &'static GroupObjects,
     ) -> Self {
         Self {
-            transport: transport,
-            rx: rx,
-            tx: tx,
+            transport,
+            associations,
+            group_objects,
         }
     }
 
-    pub async fn receive(&self, frame: Result<TransportServiceInd, FrameError>) {
-        match frame {
-            Ok(TransportServiceInd::DataGroup(frame)) => {
-                let apci = frame.apci(ApciBits::Four);
-                match apci {
-                    0 => {
-                        info!("A_GroupValue_Read");
-                        self.tx.send(ApplicationServiceInd::GroupValueRead(0)).await;
-                    }
-                    1 => {
-                        info!("A_GroupValue_Response");
-                    }
-                    2 => {
-                        info!("A_GroupValue_Write");
-                    }
-                    _ => {
-                        error!("Invalid APCI: {:x}", apci);
-                    }
-                }
+    async fn handle_ind(&self, ind: Result<Option<TransportServiceInd>, FrameError>) {
+        match ind {
+            Ok(Some(TransportServiceInd::DataGroup { tsap, frame })) => {
+                self.group_value_ind(tsap, frame).await
             }
             Ok(_) => {}
             Err(e) => error!("Frame reception error: {}", e),
         }
     }
 
-    pub async fn run(self) -> ! {
-        loop {
-            match select(self.transport.receive(), self.rx.ready_to_receive()).await {
-                Either::First(frame) => {
-                    self.receive(frame).await;
-                }
-                Either::Second(_) => match self.rx.receive().await {
-                    ApplicationServiceRes::GroupValueRead(resp) => {
-                        self.transport
-                            .send(transport_layer::TransportServiceReq::DataGroupReq(unwrap!(
-                                resp.to_transport(0),
-                            )))
-                            .await;
+    async fn group_value_ind(&self, tsap: Tsap, frame: Frame) {
+        match frame.group_service() {
+            Some(GroupService::Read) => {
+                drop(frame);
+                for asap in self.associations.asaps(tsap) {
+                    if let Some(response) = self.group_objects.response_frame(asap) {
+                        self.send(asap, response).await;
                     }
-                },
+                }
+            }
+            Some(service) => {
+                for asap in self.associations.asaps(tsap) {
+                    self.group_objects.bus_value(asap, service, &frame);
+                }
+            }
+            None => warn!("Unsupported group APCI: {:x}", frame.apci(ApciBits::Ten)),
+        }
+    }
+
+    async fn send(&self, asap: Asap, frame: Frame) -> Option<(Tsap, Frame, ConStatus)> {
+        let Some(tsap) = self.associations.sending_tsap(asap) else {
+            warn!("Group object {} has no group address", asap);
+            return None;
+        };
+        let (frame, status) = self
+            .transport
+            .send(TransportServiceReq::DataGroup { tsap, frame })
+            .await?;
+        Some((tsap, frame, status))
+    }
+
+    /// Sends one transmit request; the others wait for the next loop iteration, so received
+    /// frames are handled in between.
+    async fn transmit(&self) {
+        let Some((asap, frame)) = self.group_objects.start_transmission() else {
+            return;
+        };
+        let write = frame.group_service() == Some(GroupService::Write);
+        match self.send(asap, frame).await {
+            Some((tsap, frame, status)) => {
+                self.group_objects.confirm(asap, status);
+                if write && status == ConStatus::Ok {
+                    for other in self.associations.asaps(tsap).filter(|&a| a != asap) {
+                        self.group_objects.bus_value(other, GroupService::Write, &frame);
+                    }
+                }
+            }
+            None => self.group_objects.confirm(asap, ConStatus::NotOk),
+        }
+        if self.group_objects.transmit_pending() {
+            self.group_objects.signal_transmit_request();
+        }
+    }
+
+    /// Each `select` branch only takes an event off a queue; all processing happens after it.
+    pub async fn run(self) -> ! {
+        self.group_objects.request_reads_on_init();
+        loop {
+            let event = select3(
+                self.transport.next_frame(),
+                self.group_objects.transmit_requested(),
+                at(self.transport.deadline()),
+            )
+            .await;
+            match event {
+                Either3::First(frame) => {
+                    let ind = self.transport.handle_frame(frame).await;
+                    self.handle_ind(ind).await;
+                }
+                Either3::Second(()) => self.transmit().await,
+                Either3::Third(()) => {
+                    let ind = self.transport.handle_timeout().await;
+                    self.handle_ind(ind).await;
+                }
             }
         }
     }

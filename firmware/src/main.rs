@@ -4,17 +4,21 @@
 use assign_resources::assign_resources;
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_knx::application_layer::{self, ApplicationLayer, SERVICE_CHANNEL_SIZE};
+use embassy_knx::application_layer::ApplicationLayer;
 use embassy_knx::bus::Bus;
-use embassy_knx::data_point::*;
-use embassy_knx::frame::{self, LargeFrameBlock, SmallFrameBlock};
+use embassy_knx::data_point::B1;
+use embassy_knx::frame::{self, GroupAddress, LargeFrameBlock, Priority, SmallFrameBlock};
+use embassy_knx::group_address_table::GroupAddressTable;
+use embassy_knx::group_object::ConfigFlag::*;
+use embassy_knx::group_object::{
+    value_bytes, Asap, Descriptor, GroupObjectRam, GroupObjects, ValueType,
+};
+use embassy_knx::group_object_association_table::{Association, AssociationTable};
 use embassy_knx::ncn51_driver::NCN51Driver;
 use embassy_knx::{data_link_layer, network_layer, transport_layer};
 use embassy_nrf::buffered_uarte::{self, BufferedUarte};
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::{bind_interrupts, peripherals, uarte, Peri};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
 use static_cell::StaticCell;
 
 use {defmt_rtt as _, panic_probe as _};
@@ -41,6 +45,31 @@ const SMALL_FRAME_POOL_SIZE: usize = 12;
 const LARGE_FRAME_POOL_SIZE: usize = 2;
 
 static BUS: Bus = Bus::new();
+
+const SWITCH: Asap = Asap::new(1);
+const STATUS: Asap = Asap::new(2);
+
+const GROUP_ADDRESSES: GroupAddressTable = GroupAddressTable::new(&[
+    GroupAddress::from_parts(1, 1, 98),
+    GroupAddress::from_parts(1, 1, 99),
+]);
+const ASSOCIATIONS: AssociationTable =
+    AssociationTable::new(&[Association::new(1, 1), Association::new(2, 2)]);
+static DESCRIPTORS: [Descriptor; 2] = [
+    Descriptor::new(ValueType::bits(1), Priority::Low, &[Communication, Write]),
+    Descriptor::new(ValueType::bits(1), Priority::Low, &[Communication, Read, Transmit]),
+];
+
+fn new_group_objects() -> &'static GroupObjects {
+    static VALUES: StaticCell<[u8; value_bytes(&DESCRIPTORS)]> = StaticCell::new();
+    static RAM: StaticCell<[GroupObjectRam; DESCRIPTORS.len()]> = StaticCell::new();
+    static GROUP_OBJECTS: StaticCell<GroupObjects> = StaticCell::new();
+    GROUP_OBJECTS.init(GroupObjects::new(
+        &DESCRIPTORS,
+        VALUES.init([0; value_bytes(&DESCRIPTORS)]),
+        RAM.init([const { GroupObjectRam::new() }; DESCRIPTORS.len()]),
+    ))
+}
 
 type Driver = NCN51Driver<BufferedUarte<'static>, Output<'static>>;
 
@@ -87,16 +116,6 @@ async fn main(spawner: Spawner) {
     let t = embassy_nrf::pac::DCNF.cpuid().read().cpuid();
     let mut led = Output::new(p.P1_05, Level::Low, OutputDrive::Standard);
     let r = split_resources!(p);
-    static SERVICE_CHANNEL_RX: Channel<
-        CriticalSectionRawMutex,
-        application_layer::ApplicationServiceInd,
-        SERVICE_CHANNEL_SIZE,
-    > = Channel::new();
-    static SERVICE_CHANNEL_TX: Channel<
-        CriticalSectionRawMutex,
-        application_layer::ApplicationServiceRes,
-        SERVICE_CHANNEL_SIZE,
-    > = Channel::new();
     static SMALL_BLOCKS: StaticCell<[SmallFrameBlock; SMALL_FRAME_POOL_SIZE]> = StaticCell::new();
     static LARGE_BLOCKS: StaticCell<[LargeFrameBlock; LARGE_FRAME_POOL_SIZE]> = StaticCell::new();
     frame::init_frame_pool(
@@ -110,34 +129,19 @@ async fn main(spawner: Spawner) {
     let driver = new_driver(r.uart);
     let data_link = data_link_layer::DataLinkLayer::new(&BUS);
     let network = network_layer::NetworkLayer::new(data_link);
-    let transport = transport_layer::TransportLayer::new(network);
-    let application = application_layer::ApplicationLayer::new(
-        transport,
-        SERVICE_CHANNEL_TX.receiver(),
-        SERVICE_CHANNEL_RX.sender(),
-    );
+    let transport = transport_layer::TransportLayer::new(network, GROUP_ADDRESSES);
+    let group_objects = new_group_objects();
+    let application = ApplicationLayer::new(transport, ASSOCIATIONS, group_objects);
 
     spawner.spawn(unwrap!(uart_task(driver)));
     spawner.spawn(unwrap!(application_task(application)));
 
     loop {
-        let ind = SERVICE_CHANNEL_RX.receive().await;
-        match ind {
-            application_layer::ApplicationServiceInd::GroupValueRead(asap) => {
-                info!("Read request on ASAP: {}", asap);
-                let resp = application_layer::GroupReadResponse::new(
-                    0,
-                    DataPoint::B1(B1::new(true)),
-                    frame::Priority::Normal,
-                );
-                SERVICE_CHANNEL_TX
-                    .send(application_layer::ApplicationServiceRes::GroupValueRead(
-                        resp,
-                    ))
-                    .await;
-            }
+        if group_objects.updated().await == SWITCH {
+            let on: B1 = group_objects.get(SWITCH);
+            info!("Switch: {}", on.value());
+            led.set_level(Level::from(on.value()));
+            group_objects.set(STATUS, &on);
         }
-
-        led.toggle();
     }
 }

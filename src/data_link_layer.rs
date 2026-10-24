@@ -29,11 +29,12 @@ impl DataLinkLayer {
         self.bus.con.wait().await
     }
 
-    pub async fn receive(&self) -> DataServiceInd {
-        loop {
-            let frame = self.bus.bus_rx.receive().await;
-            info!("{}", frame);
-            return DataServiceInd::Data(frame);
-        }
+    /// Cancel-safe: only takes the next frame off the queue.
+    pub async fn next_frame(&self) -> Frame {
+        self.bus.bus_rx.receive().await
+    }
+
+    pub fn receive(&self, frame: Frame) -> DataServiceInd {
+        DataServiceInd::Data(frame)
     }
 }

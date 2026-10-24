@@ -39,11 +39,13 @@ Async code runs on `futures-executor`'s `block_on`, with embassy-time's `std` ti
 
 | Module | Covers |
 |---|---|
-| `frame.rs` | Parsing and building standard and extended frames, addresses, field setters, length limits, frames from datapoints. |
-| `data_point.rs` | DPT lengths and encoding. |
-| `transport_layer.rs` | TPDU classification and the connection state machine (connect, ACK, repeats, sequence-number wrap, rejecting a second connection, disconnect). |
+| `frame.rs` | Parsing and building standard and extended frames, addresses, field setters, length limits, group value frames (short, whole octets, extended), APDU data. |
+| `data_point.rs` | DPT value types and encode/decode round trips. |
+| `group_object.rs` | Descriptor bit layout, value type sizes, value storage, the communication flags (transmit request, confirmation, read requests, read on init) and the C/R/W/T/U checks. |
+| `group_address_table.rs`, `group_object_association_table.rs` | GA ↔ TSAP lookup, unsorted tables rejected, TSAP fan-out to ASAPs, sending association. |
+| `transport_layer.rs` | TPDU classification, GA ↔ TSAP on receive and send, and the connection state machine (connect, ACK, repeats, sequence-number wrap, rejecting a second connection, disconnect). |
 
-`src/test_util.rs` holds the shared helpers. `StackHarness` builds the real data link, network and transport layers on a private `Bus` and stands in for the driver: `inject()` delivers a received telegram, and every frame the stack sends is recorded (`sent()`) and confirmed with L_Data.con(Ok).
+`src/test_util.rs` holds the shared helpers. `StackHarness` builds the real data link, network and transport layers on a private `Bus`, with a group address table holding 1/1/98, and stands in for the driver: `inject()` delivers a received telegram, and every frame the stack sends is recorded (`sent()`) and confirmed with L_Data.con(Ok). `receive(&tl)` runs the transport layer until it indicates something. `group_objects(descriptors)` builds a `GroupObjects` on leaked buffers.
 
 ### Integration tests (`tests/`)
 
@@ -57,7 +59,7 @@ Async code runs on `futures-executor`'s `block_on`, with embassy-time's `std` ti
 | File | Covers |
 |---|---|
 | `tests/driver.rs` | The driver at the byte level: receiving, ACK only for our own individual address and group frames, checksum errors, a full-length extended frame, stray bytes, transmission with positive and negative confirmation, a standard frame sent in one UART write, the confirmation returning the sent frame, repetitions, a frame received while waiting for the confirmation, and a long extended frame (U_L_DataOffset). |
-| `tests/stack.rs` | End to end, with the real driver, the full stack and the test acting as the application: a GroupValueRead answered with a GroupValueResponse, and a T_Data_Connected answered with a T_ACK. |
+| `tests/stack.rs` | End to end, with the real driver, the full stack and the test acting as the application through `GroupObjects`. Each test configures its own group objects and associations (`Device::run`). Covers: GroupValueRead answered from the stored value, Write and Response updating objects, the C/R/W/U flags, unknown group addresses, `set` and `request_read` with their confirmations, read on init, one telegram updating several objects, our own Write updating other objects on the same address, a transmit request while a T_ACK waits for its confirmation (B8), and a T_Data_Connected answered with a T_ACK. |
 
 ### Writing new tests
 

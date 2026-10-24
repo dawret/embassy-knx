@@ -326,7 +326,6 @@ dependencies = [
  "embassy-time",
  "embedded-hal 1.0.0",
  "embedded-io-async 0.7.0",
- "enum_dispatch",
  "heapless",
  "num_enum",
 ]
@@ -532,18 +531,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69aa7787b8ba0cf4e626c95839f811d853b75e24a0f7312a1eef324fedc13b21"
 dependencies = [
  "embedded-storage",
-]
-
-[[package]]
-name = "enum_dispatch"
-version = "0.3.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
-dependencies = [
- "once_cell",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]

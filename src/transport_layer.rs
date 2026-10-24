@@ -1,11 +1,13 @@
+use crate::bus::ConStatus;
 use crate::frame::*;
+use crate::group_address_table::{GroupAddressTable, Tsap};
 use crate::network_layer::{NetworkLayer, NetworkServiceInd, NetworkServiceReq};
 use core::cell::RefCell;
-use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Instant, Timer};
 
 pub struct TransportLayer {
     network: NetworkLayer,
+    group_addresses: GroupAddressTable,
     connection: RefCell<Connection>,
 }
 
@@ -14,7 +16,7 @@ pub struct TransportLayer {
 pub enum TransportServiceInd {
     DataBroadcast(Frame),
     DataSystemBroadcast(Frame),
-    DataGroup(Frame),
+    DataGroup { tsap: Tsap, frame: Frame },
     DataTagGroup(Frame),
     DataIndividual(Frame),
     DataConnected(Frame),
@@ -24,46 +26,30 @@ pub enum TransportServiceInd {
     NAK(Frame),
 }
 
-pub struct DataGroupReq {
-    #[allow(dead_code)]
-    tsap: u8,
-    frame: Frame,
-}
-
-impl DataGroupReq {
-    pub fn new(tsap: u8, frame: Frame) -> Self {
-        Self {
-            tsap: tsap,
-            frame: frame,
-        }
-    }
-    fn info_frame(mut self, dst_address: GroupAddress) -> Frame {
-        self.frame.set_dst_addr(&Address::Group(dst_address));
-        self.frame.set_src_addr(&crate::settings::ADDRESS);
-        self.frame.set_tpci(TpciBits::Six, 0x0);
-        self.frame
-    }
-}
-
 pub enum TransportServiceReq {
-    DataGroupReq(DataGroupReq),
+    DataGroup { tsap: Tsap, frame: Frame },
 }
 
 impl TransportLayer {
-    pub fn new(network: NetworkLayer) -> Self {
+    pub fn new(network: NetworkLayer, group_addresses: GroupAddressTable) -> Self {
         Self {
             network,
+            group_addresses,
             connection: RefCell::new(Connection::new()),
         }
     }
 
-    pub async fn send(&self, req: TransportServiceReq) {
+    /// Returns the frame with its L_Data.con, or `None` if the TSAP is not in the group
+    /// address table.
+    pub async fn send(&self, req: TransportServiceReq) -> Option<(Frame, ConStatus)> {
         match req {
-            TransportServiceReq::DataGroupReq(req) => {
-                let dst_address = GroupAddress::from_parts(1, 1, 98);
-                self.network
-                    .send(NetworkServiceReq::DataGroup(req.info_frame(dst_address)))
-                    .await;
+            TransportServiceReq::DataGroup { tsap, mut frame } => {
+                let address = self.group_addresses.address(tsap)?;
+                frame.set_dst_addr(&Address::Group(address));
+                frame.set_src_addr(&crate::settings::ADDRESS);
+                frame.set_hop_count(7);
+                frame.set_tpci(TpciBits::Six, 0x0);
+                Some(self.network.send(NetworkServiceReq::DataGroup(frame)).await)
             }
         }
     }
@@ -122,7 +108,15 @@ impl TransportLayer {
                 let tpci = frame.tpci(TpciBits::Six);
                 info!("DataGroup: {:x}", tpci);
                 match tpci {
-                    0 => Ok(Some(TransportServiceInd::DataGroup(frame))),
+                    0 => {
+                        let Address::Group(address) = frame.dst_addr() else {
+                            unreachable!()
+                        };
+                        Ok(self
+                            .group_addresses
+                            .tsap(&address)
+                            .map(|tsap| TransportServiceInd::DataGroup { tsap, frame }))
+                    }
                     1 => Ok(Some(TransportServiceInd::DataTagGroup(frame))),
                     _ => Err(FrameError::InvalidTpdu(tpci)),
                 }
@@ -133,24 +127,34 @@ impl TransportLayer {
         }
     }
 
-    pub async fn receive(&self) -> Result<TransportServiceInd, FrameError> {
-        loop {
-            // Copy the deadline out: no borrow of `connection` may live across the select.
-            let deadline = self.connection.borrow().connection_timeout;
-            let timeout = async {
-                match deadline {
-                    Some(deadline) => Timer::at(deadline).await,
-                    None => core::future::pending().await,
-                }
-            };
-            let ret = match select(self.network.receive(), timeout).await {
-                Either::First(ind) => self.receive_ind(ind).await,
-                Either::Second(_) => self.connection.borrow_mut().connection_timeout().await,
-            }?;
-            if let Some(ind) = ret {
-                return Ok(ind);
-            }
+    pub async fn next_frame(&self) -> Frame {
+        self.network.next_frame().await
+    }
+
+    pub async fn handle_frame(
+        &self,
+        frame: Frame,
+    ) -> Result<Option<TransportServiceInd>, FrameError> {
+        match self.network.receive(frame) {
+            Some(ind) => self.receive_ind(ind).await,
+            None => Ok(None),
         }
+    }
+
+    pub fn deadline(&self) -> Option<Instant> {
+        self.connection.borrow().connection_timeout
+    }
+
+    pub async fn handle_timeout(&self) -> Result<Option<TransportServiceInd>, FrameError> {
+        self.connection.borrow_mut().connection_timeout().await
+    }
+}
+
+/// Completes at `deadline`, never if there is none.
+pub async fn at(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => Timer::at(deadline).await,
+        None => core::future::pending().await,
     }
 }
 
@@ -470,7 +474,7 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{run, settle, StackHarness};
+    use crate::test_util::{receive, run, settle, StackHarness};
 
     const ME: [u8; 2] = [0x11, 0x78];
     const PEER: [u8; 2] = [0x11, 0xFA];
@@ -502,15 +506,41 @@ mod tests {
     fn group_frame_is_indicated() {
         let (h, tl) = StackHarness::new();
         h.inject(&[0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE1, 0x00, 0x00]);
-        let ind = run(h.run(tl.receive()));
-        assert!(matches!(ind, Ok(TransportServiceInd::DataGroup(_))), "{ind:?}");
+        let ind = run(h.run(receive(&tl)));
+        let tsap = Tsap::new(1);
+        assert!(matches!(ind, Ok(TransportServiceInd::DataGroup { tsap: t, .. }) if t == tsap), "{ind:?}");
+    }
+
+    #[test]
+    fn group_frame_to_unknown_address_is_dropped() {
+        let (h, tl) = StackHarness::new();
+        h.inject(&[0xBC, 0x11, 0x0A, 0x09, 0x63, 0xE1, 0x00, 0x00]);
+        h.inject(&[0xBC, 0x11, 0x0A, 0x00, 0x00, 0xE1, 0x00, 0x00]);
+        let ind = run(h.run(receive(&tl)));
+        assert!(matches!(ind, Ok(TransportServiceInd::DataBroadcast(_))), "{ind:?}");
+    }
+
+    #[test]
+    fn group_frame_is_sent_to_the_address_of_its_tsap() {
+        let (h, tl) = StackHarness::new();
+        run(h.run(async {
+            let frame = Frame::group_read(Priority::Low).unwrap();
+            let req = TransportServiceReq::DataGroup { tsap: Tsap::new(1), frame };
+            let (_, status) = tl.send(req).await.unwrap();
+            assert_eq!(status, ConStatus::Ok);
+            assert_eq!(h.sent().await, [0xBC, ME[0], ME[1], 0x09, 0x62, 0xF1, 0x00, 0x00]);
+
+            let frame = Frame::group_read(Priority::Low).unwrap();
+            let req = TransportServiceReq::DataGroup { tsap: Tsap::new(2), frame };
+            assert!(tl.send(req).await.is_none());
+        }));
     }
 
     #[test]
     fn broadcast_frame_is_indicated() {
         let (h, tl) = StackHarness::new();
         h.inject(&[0xBC, 0x11, 0x0A, 0x00, 0x00, 0xE1, 0x00, 0x00]);
-        let ind = run(h.run(tl.receive()));
+        let ind = run(h.run(receive(&tl)));
         assert!(matches!(ind, Ok(TransportServiceInd::DataBroadcast(_))), "{ind:?}");
     }
 
@@ -518,7 +548,7 @@ mod tests {
     fn unknown_control_tpdu_is_rejected() {
         let (h, tl) = StackHarness::new();
         h.inject(&individual(PEER, 0x60, &[0x82]));
-        let ind = run(h.run(tl.receive()));
+        let ind = run(h.run(receive(&tl)));
         assert!(matches!(ind, Err(FrameError::InvalidTpdu(0x82))), "{ind:?}");
     }
 
@@ -527,11 +557,11 @@ mod tests {
         let (h, tl) = StackHarness::new();
         run(h.run(async {
             h.inject(&t_connect(PEER));
-            let ind = tl.receive().await;
+            let ind = receive(&tl).await;
             assert!(matches!(ind, Ok(TransportServiceInd::Connect(_))), "{ind:?}");
 
             h.inject(&t_data_connected(PEER, 0));
-            let ind = tl.receive().await;
+            let ind = receive(&tl).await;
             assert!(matches!(ind, Ok(TransportServiceInd::DataConnected(_))), "{ind:?}");
             assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
         }));
@@ -542,14 +572,14 @@ mod tests {
         let (h, tl) = StackHarness::new();
         run(h.run(async {
             h.inject(&t_connect(PEER));
-            tl.receive().await.unwrap();
+            receive(&tl).await.unwrap();
             h.inject(&t_data_connected(PEER, 0));
-            tl.receive().await.unwrap();
+            receive(&tl).await.unwrap();
             assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
 
             h.inject(&t_data_connected(PEER, 0));
             h.inject(&t_disconnect(PEER));
-            let ind = tl.receive().await;
+            let ind = receive(&tl).await;
             assert!(matches!(ind, Ok(TransportServiceInd::Disconnect(_))), "{ind:?}");
             assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
         }));
@@ -560,10 +590,10 @@ mod tests {
         let (h, tl) = StackHarness::new();
         run(h.run(async {
             h.inject(&t_connect(PEER));
-            tl.receive().await.unwrap();
+            receive(&tl).await.unwrap();
             for seq in (0..16).chain([0, 1]) {
                 h.inject(&t_data_connected(PEER, seq));
-                let ind = tl.receive().await;
+                let ind = receive(&tl).await;
                 assert!(
                     matches!(ind, Ok(TransportServiceInd::DataConnected(_))),
                     "seq {seq}: {ind:?}"
@@ -578,10 +608,10 @@ mod tests {
         let (h, tl) = StackHarness::new();
         run(h.run(async {
             h.inject(&t_connect(PEER));
-            tl.receive().await.unwrap();
+            receive(&tl).await.unwrap();
             h.inject(&t_data_connected(PEER, 3));
             h.inject(&t_data_connected(PEER, 0));
-            let ind = tl.receive().await;
+            let ind = receive(&tl).await;
             assert!(matches!(ind, Ok(TransportServiceInd::DataConnected(_))), "{ind:?}");
             assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
         }));
@@ -592,11 +622,11 @@ mod tests {
         let (h, tl) = StackHarness::new();
         run(h.run(async {
             h.inject(&t_connect(PEER));
-            tl.receive().await.unwrap();
+            receive(&tl).await.unwrap();
             h.inject(&t_ack(PEER, 0));
             h.inject(&t_nak(PEER, 0));
             h.inject(&t_disconnect(PEER));
-            let ind = tl.receive().await;
+            let ind = receive(&tl).await;
             assert!(matches!(ind, Ok(TransportServiceInd::Disconnect(_))), "{ind:?}");
         }));
     }
@@ -606,11 +636,11 @@ mod tests {
         let (h, tl) = StackHarness::new();
         run(h.run(async {
             h.inject(&t_connect(PEER));
-            tl.receive().await.unwrap();
+            receive(&tl).await.unwrap();
 
             h.inject(&t_connect(OTHER));
             h.inject(&t_data_connected(PEER, 0));
-            let ind = tl.receive().await;
+            let ind = receive(&tl).await;
             assert!(matches!(ind, Ok(TransportServiceInd::DataConnected(_))), "{ind:?}");
             assert_eq!(h.sent().await, sent_control(OTHER, 0x81));
             assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
@@ -622,15 +652,15 @@ mod tests {
         let (h, tl) = StackHarness::new();
         run(h.run(async {
             h.inject(&t_connect(PEER));
-            tl.receive().await.unwrap();
+            receive(&tl).await.unwrap();
             h.inject(&t_disconnect(PEER));
-            let ind = tl.receive().await;
+            let ind = receive(&tl).await;
             assert!(matches!(ind, Ok(TransportServiceInd::Disconnect(_))), "{ind:?}");
 
             h.inject(&t_data_connected(PEER, 0));
             h.inject(&[0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE1, 0x00, 0x00]);
-            let ind = tl.receive().await;
-            assert!(matches!(ind, Ok(TransportServiceInd::DataGroup(_))), "{ind:?}");
+            let ind = receive(&tl).await;
+            assert!(matches!(ind, Ok(TransportServiceInd::DataGroup { .. })), "{ind:?}");
             assert_eq!(h.sent().await, sent_control(PEER, 0x81));
             settle().await;
             assert!(h.nothing_sent());

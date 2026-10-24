@@ -1,8 +1,12 @@
 use crate::bus::{Bus, ConStatus};
 use crate::data_link_layer::DataLinkLayer;
-use crate::frame::{init_frame_pool, Frame, LargeFrameBlock, SmallFrameBlock};
+use crate::frame::{
+    init_frame_pool, Frame, FrameError, GroupAddress, LargeFrameBlock, SmallFrameBlock,
+};
+use crate::group_address_table::GroupAddressTable;
+use crate::group_object::{value_bytes, Descriptor, GroupObjectRam, GroupObjects};
 use crate::network_layer::NetworkLayer;
-use crate::transport_layer::TransportLayer;
+use crate::transport_layer::{at, TransportLayer, TransportServiceInd};
 use core::future::Future;
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -12,6 +16,10 @@ use std::sync::Once;
 use std::vec::Vec;
 
 const TEST_POOL_SIZE: usize = 64;
+
+/// 1/1/98.
+pub const GROUP_ADDRESSES: GroupAddressTable =
+    GroupAddressTable::new(&[GroupAddress::from_parts(1, 1, 98)]);
 
 pub fn init_pool() {
     static INIT: Once = Once::new();
@@ -37,6 +45,13 @@ pub fn frame(telegram: &[u8]) -> Frame {
     Frame::from_slice(&with_checksum(telegram)).unwrap()
 }
 
+pub fn group_objects(descriptors: &[Descriptor]) -> &'static GroupObjects {
+    let descriptors: &'static [Descriptor] = Box::leak(descriptors.to_vec().into_boxed_slice());
+    let values = Box::leak(vec![0; value_bytes(descriptors)].into_boxed_slice());
+    let ram = Box::leak(vec![GroupObjectRam::new(); descriptors.len()].into_boxed_slice());
+    Box::leak(Box::new(GroupObjects::new(descriptors, values, ram)))
+}
+
 pub struct StackHarness {
     pub bus: &'static Bus,
     sent: Channel<CriticalSectionRawMutex, Vec<u8>, 16>,
@@ -50,7 +65,7 @@ impl StackHarness {
             sent: Channel::new(),
         }));
         let network = NetworkLayer::new(DataLinkLayer::new(harness.bus));
-        (harness, TransportLayer::new(network))
+        (harness, TransportLayer::new(network, GROUP_ADDRESSES))
     }
 
     pub fn inject(&self, telegram: &[u8]) {
@@ -77,6 +92,18 @@ impl StackHarness {
         match select(body, driver).await {
             Either::First(out) => out,
             Either::Second(_) => unreachable!(),
+        }
+    }
+}
+
+pub async fn receive(tl: &TransportLayer) -> Result<TransportServiceInd, FrameError> {
+    loop {
+        let ind = match select(tl.next_frame(), at(tl.deadline())).await {
+            Either::First(frame) => tl.handle_frame(frame).await,
+            Either::Second(()) => tl.handle_timeout().await,
+        };
+        if let Some(ind) = ind? {
+            return Ok(ind);
         }
     }
 }

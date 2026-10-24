@@ -1,128 +1,102 @@
-use enum_dispatch::enum_dispatch;
+use crate::group_object::ValueType;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum DataPointLength {
-    Bit(usize),
-    Byte(usize),
-}
-
-#[enum_dispatch]
-pub trait DataPointAccess {
-    fn length(&self) -> DataPointLength;
-    fn write(&self, buf: &mut [u8]);
-    fn byte_length(&self) -> usize {
-        match self.length() {
-            DataPointLength::Bit(n) if n < 6 => 0,
-            DataPointLength::Bit(_) => 1,
-            DataPointLength::Byte(n) => n,
-        }
-    }
-}
-
-#[enum_dispatch(DataPointAccess)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum DataPoint {
-    B1,
-    B2,
-    //B1U3,
-    //Char,
-    U8,
-    U16,
-    /*V8,
-    StatusMode,
-    S16,
-    F16,
-    Time,
-    Date,
-    U32,
-    S32,
-    F32,
-    AccessData,
-    String,
-    SceneNumber,
-    SceneControl,
-    DateTime,
-    N8,
-    B8,
-    N2,
-    VarString,
-    SceneInfo,
-    B32,
-    UnicodeString,
-    V64,*/
+/// A datapoint type: the encoding of a group object value. `buf` is the object's value
+/// storage, `VALUE_TYPE.size_octets()` long; values of up to 7 bits are right-aligned.
+pub trait Dpt: Sized {
+    const VALUE_TYPE: ValueType;
+    fn encode(&self, buf: &mut [u8]);
+    fn decode(buf: &[u8]) -> Self;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct B1(u8);
+pub struct B1(bool);
 
 impl B1 {
     pub fn new(data: bool) -> Self {
-        Self(data as u8)
+        Self(data)
+    }
+    pub fn value(self) -> bool {
+        self.0
     }
 }
 
-impl DataPointAccess for B1 {
-    fn length(&self) -> DataPointLength {
-        DataPointLength::Bit(1)
+impl Dpt for B1 {
+    const VALUE_TYPE: ValueType = ValueType::bits(1);
+    fn encode(&self, buf: &mut [u8]) {
+        buf[0] = self.0 as u8;
     }
-    fn write(&self, buf: &mut [u8]) {
-        buf[0] |= self.0 & 0x1;
+    fn decode(buf: &[u8]) -> Self {
+        Self(buf[0] & 0x1 != 0)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct B2(u8);
+
 impl B2 {
     pub fn new(data: u8) -> Self {
-        Self(data)
+        Self(data & 0x3)
+    }
+    pub fn value(self) -> u8 {
+        self.0
     }
 }
 
-impl DataPointAccess for B2 {
-    fn length(&self) -> DataPointLength {
-        DataPointLength::Bit(2)
+impl Dpt for B2 {
+    const VALUE_TYPE: ValueType = ValueType::bits(2);
+    fn encode(&self, buf: &mut [u8]) {
+        buf[0] = self.0;
     }
-    fn write(&self, buf: &mut [u8]) {
-        buf[0] |= self.0 & 0x3;
+    fn decode(buf: &[u8]) -> Self {
+        Self(buf[0] & 0x3)
     }
 }
-//pub struct B1U3 {}
-//pub struct Char {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct U8(u8);
+
 impl U8 {
     pub fn new(data: u8) -> Self {
         Self(data)
     }
-}
-impl DataPointAccess for U8 {
-    fn length(&self) -> DataPointLength {
-        DataPointLength::Byte(1)
+    pub fn value(self) -> u8 {
+        self.0
     }
-    fn write(&self, buf: &mut [u8]) {
+}
+
+impl Dpt for U8 {
+    const VALUE_TYPE: ValueType = ValueType::octets(1);
+    fn encode(&self, buf: &mut [u8]) {
         buf[0] = self.0;
     }
+    fn decode(buf: &[u8]) -> Self {
+        Self(buf[0])
+    }
 }
-//pub struct V8 {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct U16(u16);
+
 impl U16 {
     pub fn new(data: u16) -> Self {
         Self(data)
     }
-}
-impl DataPointAccess for U16 {
-    fn length(&self) -> DataPointLength {
-        DataPointLength::Byte(2)
+    pub fn value(self) -> u16 {
+        self.0
     }
-    fn write(&self, buf: &mut [u8]) {
+}
+
+impl Dpt for U16 {
+    const VALUE_TYPE: ValueType = ValueType::octets(2);
+    fn encode(&self, buf: &mut [u8]) {
         buf[..2].copy_from_slice(&self.0.to_be_bytes());
+    }
+    fn decode(buf: &[u8]) -> Self {
+        Self(u16::from_be_bytes([buf[0], buf[1]]))
     }
 }
 
@@ -130,39 +104,27 @@ impl DataPointAccess for U16 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn lengths() {
-        let cases = [
-            (DataPoint::B1(B1::new(true)), DataPointLength::Bit(1), 0),
-            (DataPoint::B2(B2::new(2)), DataPointLength::Bit(2), 0),
-            (DataPoint::U8(U8::new(7)), DataPointLength::Byte(1), 1),
-            (DataPoint::U16(U16::new(7)), DataPointLength::Byte(2), 2),
-        ];
-        for (dp, length, byte_length) in cases {
-            assert_eq!(dp.length(), length, "{dp:?}");
-            assert_eq!(dp.byte_length(), byte_length, "{dp:?}");
-        }
+    fn round_trip<T: Dpt + PartialEq + core::fmt::Debug>(value: T, encoded: &[u8]) {
+        let mut buf = vec![0xFF; T::VALUE_TYPE.size_octets()];
+        value.encode(&mut buf);
+        assert_eq!(buf, encoded, "{value:?}");
+        assert_eq!(T::decode(&buf), value);
     }
 
     #[test]
-    fn short_values_keep_the_apci_bits() {
-        let mut buf = [0x80];
-        B1::new(true).write(&mut buf);
-        assert_eq!(buf, [0x81]);
-
-        let mut buf = [0x80];
-        B2::new(0x3).write(&mut buf);
-        assert_eq!(buf, [0x83]);
+    fn values_round_trip() {
+        round_trip(B1::new(true), &[0x01]);
+        round_trip(B1::new(false), &[0x00]);
+        round_trip(B2::new(0x3), &[0x03]);
+        round_trip(U8::new(0xA5), &[0xA5]);
+        round_trip(U16::new(0x1234), &[0x12, 0x34]);
     }
 
     #[test]
-    fn byte_values_are_big_endian() {
-        let mut buf = [0; 1];
-        U8::new(0xA5).write(&mut buf);
-        assert_eq!(buf, [0xA5]);
-
-        let mut buf = [0; 2];
-        U16::new(0x1234).write(&mut buf);
-        assert_eq!(buf, [0x12, 0x34]);
+    fn value_types() {
+        assert!(B1::VALUE_TYPE.is_short());
+        assert_eq!(B2::VALUE_TYPE.size_bits(), 2);
+        assert!(!U8::VALUE_TYPE.is_short());
+        assert_eq!(U16::VALUE_TYPE.size_octets(), 2);
     }
 }

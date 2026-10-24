@@ -23,7 +23,6 @@ defmt = { version = "1.2", optional = true }
 
 heapless = { version = "0.9" }
 num_enum = { version = "0.7.6", default-features = false }
-enum_dispatch = "0.3.13"
 
 # heapless' pool needs 128-bit CAS on 64-bit targets (host tests); ARM uses LL/SC natively.
 [target.'cfg(target_pointer_width = "64")'.dependencies]
