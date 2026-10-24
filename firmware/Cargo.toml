@@ -1,0 +1,28 @@
+[package]
+name = "embassy-knx-firmware"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embassy-knx = { path = "..", features = ["defmt"] }
+
+embassy-sync = { version = "0.8.0", features = ["defmt"] }
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "defmt"] }
+embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf5340-net", "time-driver-rtc1", "gpiote", "unstable-pac"] }
+embedded-io-async = { version = "0.7.0" }
+
+defmt = "1.2"
+defmt-rtt = "1.3"
+
+static_cell = "2.1"
+cortex-m = { version = "0.7.10", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7.7"
+panic-probe = { version = "1.0", features = ["print-defmt"] }
+assign-resources = { version = "0.5" }
+
+[profile.release]
+debug = 2
+#opt-level = "z"
+#lto = true
+#panic = "abort"

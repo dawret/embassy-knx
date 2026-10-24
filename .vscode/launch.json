@@ -13,7 +13,7 @@
             "coreConfigs": [
                 {
                     "coreIndex": 1,
-                    "programBinary": "${workspaceFolder}/target/thumbv8m.main-none-eabihf/release/embassy-knx"
+                    "programBinary": "${workspaceFolder}/firmware/target/thumbv8m.main-none-eabihf/release/embassy-knx-firmware"
                 }
             ]
         }

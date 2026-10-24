@@ -1,15 +1,12 @@
+use crate::bus::{Bus, ConStatus};
 use crate::frame::*;
-use crate::ncn51_driver::{ConStatus, CON_SIGNAL};
-use defmt::*;
-use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
 
 pub struct DataLinkLayer {
-    rx: Receiver<'static, ThreadModeRawMutex, Frame, 8>,
-    tx: Sender<'static, ThreadModeRawMutex, Frame, 8>,
+    bus: &'static Bus,
 }
 
-#[derive(Format)]
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DataServiceInd {
     Data(Frame),
     SystemBroadcast(Frame),
@@ -22,22 +19,19 @@ pub enum DataServiceCon {
 }
 
 impl DataLinkLayer {
-    pub fn new(
-        rx: Receiver<'static, ThreadModeRawMutex, Frame, 8>,
-        tx: Sender<'static, ThreadModeRawMutex, Frame, 8>,
-    ) -> Self {
-        Self { rx: rx, tx: tx }
+    pub fn new(bus: &'static Bus) -> Self {
+        Self { bus }
     }
 
     pub async fn send(&self, frame: Frame) {
-        CON_SIGNAL.reset();
-        self.tx.send(frame).await;
-        let con = CON_SIGNAL.wait().await;
+        self.bus.con.reset();
+        self.bus.bus_tx.send(frame).await;
+        let con = self.bus.con.wait().await;
     }
 
     pub async fn receive(&self) -> DataServiceInd {
         loop {
-            let frame = self.rx.receive().await;
+            let frame = self.bus.bus_rx.receive().await;
             info!("{}", frame);
             return DataServiceInd::Data(frame);
         }

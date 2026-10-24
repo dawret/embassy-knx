@@ -1,6 +1,5 @@
 use crate::data_link_layer::{DataLinkLayer, DataServiceInd};
 use crate::frame::*;
-use defmt::*;
 
 pub struct NetworkLayer {
     data_link: DataLinkLayer,
@@ -11,7 +10,8 @@ pub enum NetworkServiceReq {
     DataIndividual(Frame),
 }
 
-#[derive(Format)]
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum NetworkServiceInd {
     DataIndividual(Frame),
     DataGroup(Frame),

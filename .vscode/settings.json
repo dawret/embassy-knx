@@ -9,7 +9,11 @@
     "rust-analyzer.check.noDefaultFeatures": true,
     "rust-analyzer.cargo.noDefaultFeatures": true,
     "rust-analyzer.showUnlinkedFileNotification": true,
-    "rust-analyzer.cargo.target": "thumbv8m.main-none-eabihf",
+    // The library builds for the host; firmware/.cargo/config.toml selects the ARM target.
+    "rust-analyzer.linkedProjects": [
+        "Cargo.toml",
+        "firmware/Cargo.toml",
+    ],
     "rust-analyzer.cargo.features": [
         // Comment out these features when working on the examples. Most example crates do not have any cargo features.
         //"stm32f446re",

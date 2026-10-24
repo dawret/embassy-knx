@@ -1,10 +1,8 @@
 use crate::frame::*;
 use crate::network_layer::{NetworkLayer, NetworkServiceInd, NetworkServiceReq};
 use core::cell::RefCell;
-use defmt::*;
 use embassy_futures::select::{select, Either};
-use embassy_time::{Duration, Ticker};
-use futures::future;
+use embassy_time::{Duration, Instant, Timer};
 
 pub struct TransportLayer {
     network: NetworkLayer,
@@ -15,7 +13,8 @@ pub struct TransportLayer {
 
 }*/
 
-#[derive(Format)]
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum TransportServiceInd {
     DataBroadcast(Frame),
     DataSystemBroadcast(Frame),
@@ -103,13 +102,13 @@ impl TransportLayer {
                         .borrow_mut()
                         .handle_ind(TransportServiceInd::Disconnect(frame), &self.network)
                         .await
-                } else if tpci & 0x3c == 0xc2 {
+                } else if tpci & 0xc3 == 0xc2 {
                     info!("T_ACK");
                     self.connection
                         .borrow_mut()
                         .handle_ind(TransportServiceInd::ACK(frame), &self.network)
                         .await
-                } else if tpci & 0x3c == 0xc4 {
+                } else if tpci & 0xc3 == 0xc3 {
                     info!("T_NACK");
                     self.connection
                         .borrow_mut()
@@ -145,18 +144,15 @@ impl TransportLayer {
 
     pub async fn receive(&self) -> Result<TransportServiceInd, FrameError> {
         loop {
-            let ret = match select(
-                self.network.receive(),
-                self.connection
-                    .borrow_mut()
-                    .connection_timeout
-                    .as_mut()
-                    .map_or(future::Either::Left(core::future::pending()), |f| {
-                        future::Either::Right(f.next())
-                    }),
-            )
-            .await
-            {
+            // Copy the deadline out: no borrow of `connection` may live across the select.
+            let deadline = self.connection.borrow().connection_timeout;
+            let timeout = async {
+                match deadline {
+                    Some(deadline) => Timer::at(deadline).await,
+                    None => core::future::pending().await,
+                }
+            };
+            let ret = match select(self.network.receive(), timeout).await {
                 Either::First(ind) => self.receive_ind(ind).await,
                 Either::Second(_) => self.connection.borrow_mut().connection_timeout().await,
             }?;
@@ -200,6 +196,15 @@ enum Events {
     E27,
 }
 
+/// Sequence numbers are 4 bits wide and wrap around.
+fn next_seq(seq: u8) -> u8 {
+    seq.wrapping_add(1) & 0xF
+}
+
+fn prev_seq(seq: u8) -> u8 {
+    seq.wrapping_sub(1) & 0xF
+}
+
 enum States {
     Closed,
     OpenIdle,
@@ -213,7 +218,7 @@ struct Connection {
     seq_no_recv: u8,
     rep_count: u8,
     src_addr: Option<IndividualAddress>,
-    connection_timeout: Option<Ticker>,
+    connection_timeout: Option<Instant>,
     stored_frame: Option<Frame>,
 }
 
@@ -253,7 +258,7 @@ impl Connection {
             TransportServiceInd::DataConnected(frame) => match &self.src_addr {
                 Some(addr) if addr == &frame.src_addr() => match frame.tpci_seq() {
                     val if val == self.seq_no_recv => (Events::DataConnected_E04, frame),
-                    val if val == self.seq_no_recv - 1 => (Events::DataConnected_E05, frame),
+                    val if val == prev_seq(self.seq_no_recv) => (Events::DataConnected_E05, frame),
                     _ => (Events::DataConnected_E06, frame),
                 },
                 _ => (Events::DataConnectedNewAddress_E07, frame),
@@ -283,8 +288,7 @@ impl Connection {
                 _ => (Events::NakNewAddress_E14, frame),
             },
             _ => {
-                error!("Invalid IND");
-                self::panic!("");
+                panic!("Invalid IND");
             }
         };
         self.handle_event(event, frame, network).await
@@ -353,9 +357,7 @@ impl Connection {
         self.seq_no_recv = 0;
         self.seq_no_send = 0;
         self.src_addr = Some(frame.src_addr());
-        self.connection_timeout = Some(Ticker::every(Duration::from_secs(
-            Self::CONNECTION_TIMEOUT_SEC,
-        )));
+        self.restart_connection_timeout();
         Ok(Some(TransportServiceInd::Connect(frame)))
     }
 
@@ -367,10 +369,8 @@ impl Connection {
         // A2
         self.send_response_frame(frame.src_addr(), self.seq_no_recv, network, 0xc2)
             .await?;
-        self.connection_timeout = Some(Ticker::every(Duration::from_secs(
-            Self::CONNECTION_TIMEOUT_SEC,
-        )));
-        self.seq_no_recv = self.seq_no_recv + 1;
+        self.restart_connection_timeout();
+        self.seq_no_recv = next_seq(self.seq_no_recv);
         Ok(Some(TransportServiceInd::DataConnected(frame)))
     }
 
@@ -382,9 +382,7 @@ impl Connection {
         // A3
         self.send_response_frame(frame.src_addr(), frame.tpci_seq(), network, 0xc2)
             .await?;
-        self.connection_timeout = Some(Ticker::every(Duration::from_secs(
-            Self::CONNECTION_TIMEOUT_SEC,
-        )));
+        self.restart_connection_timeout();
         Ok(None)
     }
 
@@ -433,20 +431,16 @@ impl Connection {
         self.stored_frame = Some(Frame::try_from(&frame)?);
         network.send(NetworkServiceReq::DataIndividual(frame)).await;
         self.rep_count = 0;
-        self.connection_timeout = Some(Ticker::every(Duration::from_secs(
-            Self::CONNECTION_TIMEOUT_SEC,
-        )));
+        self.restart_connection_timeout();
         // Start ACK timer?
         Ok(())
     }
 
     async fn confirm_data_A8(&mut self, frame: Frame) -> Result<(), FrameError> {
         // Stop ACK timer
-        self.seq_no_send += 1;
+        self.seq_no_send = next_seq(self.seq_no_send);
         // Send CON
-        self.connection_timeout = Some(Ticker::every(Duration::from_secs(
-            Self::CONNECTION_TIMEOUT_SEC,
-        )));
+        self.restart_connection_timeout();
         Ok(())
     }
 
@@ -456,9 +450,7 @@ impl Connection {
             .send(NetworkServiceReq::DataIndividual(stored_frame))
             .await;
         self.rep_count += 1;
-        self.connection_timeout = Some(Ticker::every(Duration::from_secs(
-            Self::CONNECTION_TIMEOUT_SEC,
-        )));
+        self.restart_connection_timeout();
         // Start ACK timer
         Ok(())
     }
@@ -476,7 +468,196 @@ impl Connection {
 
     //async fn connect_A12(&mut self, )
 
+    fn restart_connection_timeout(&mut self) {
+        self.connection_timeout =
+            Some(Instant::now() + Duration::from_secs(Self::CONNECTION_TIMEOUT_SEC));
+    }
+
     async fn connection_timeout(&mut self) -> Result<Option<TransportServiceInd>, FrameError> {
+        // TODO: A6 (disconnect). Clearing the deadline keeps the timeout from firing in a loop.
+        self.connection_timeout = None;
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::{run, settle, StackHarness};
+
+    /// Our address, `settings::ADDRESS` (1.1.120).
+    const ME: [u8; 2] = [0x11, 0x78];
+    /// The connecting peer, e.g. ETS (1.1.250).
+    const PEER: [u8; 2] = [0x11, 0xFA];
+    const OTHER: [u8; 2] = [0x11, 0xFB];
+
+    // Telegrams without checksum. Control 0xB0: standard frame, not repeated, system priority.
+    fn individual(src: [u8; 2], npci: u8, tpdu: &[u8]) -> Vec<u8> {
+        [&[0xB0, src[0], src[1], ME[0], ME[1], npci], tpdu].concat()
+    }
+    fn t_connect(src: [u8; 2]) -> Vec<u8> {
+        individual(src, 0x60, &[0x80])
+    }
+    fn t_disconnect(src: [u8; 2]) -> Vec<u8> {
+        individual(src, 0x60, &[0x81])
+    }
+    /// T_Data_Connected carrying A_DeviceDescriptor_Read.
+    fn t_data_connected(src: [u8; 2], seq: u8) -> Vec<u8> {
+        individual(src, 0x61, &[0x40 | seq << 2 | 0x03, 0x00])
+    }
+    fn t_ack(src: [u8; 2], seq: u8) -> Vec<u8> {
+        individual(src, 0x60, &[0xC2 | seq << 2])
+    }
+    fn t_nak(src: [u8; 2], seq: u8) -> Vec<u8> {
+        individual(src, 0x60, &[0xC3 | seq << 2])
+    }
+    /// A control telegram the stack sends to `dst` (hop count 7).
+    fn sent_control(dst: [u8; 2], tpci: u8) -> Vec<u8> {
+        vec![0xB0, ME[0], ME[1], dst[0], dst[1], 0x70, tpci]
+    }
+
+    #[test]
+    fn group_frame_is_indicated() {
+        let (h, tl) = StackHarness::new();
+        // A_GroupValue_Read from 1.1.10 to 1/1/98.
+        h.inject(&[0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE1, 0x00, 0x00]);
+        let ind = run(h.run(tl.receive()));
+        assert!(matches!(ind, Ok(TransportServiceInd::DataGroup(_))), "{ind:?}");
+    }
+
+    #[test]
+    fn broadcast_frame_is_indicated() {
+        let (h, tl) = StackHarness::new();
+        h.inject(&[0xBC, 0x11, 0x0A, 0x00, 0x00, 0xE1, 0x00, 0x00]);
+        let ind = run(h.run(tl.receive()));
+        assert!(matches!(ind, Ok(TransportServiceInd::DataBroadcast(_))), "{ind:?}");
+    }
+
+    #[test]
+    fn unknown_control_tpdu_is_rejected() {
+        let (h, tl) = StackHarness::new();
+        h.inject(&individual(PEER, 0x60, &[0x82]));
+        let ind = run(h.run(tl.receive()));
+        assert!(matches!(ind, Err(FrameError::InvalidTpdu(0x82))), "{ind:?}");
+    }
+
+    #[test]
+    fn connect_then_data_is_acked() {
+        // B1: any connection-oriented frame used to panic with BorrowMutError.
+        let (h, tl) = StackHarness::new();
+        run(h.run(async {
+            h.inject(&t_connect(PEER));
+            let ind = tl.receive().await;
+            assert!(matches!(ind, Ok(TransportServiceInd::Connect(_))), "{ind:?}");
+
+            h.inject(&t_data_connected(PEER, 0));
+            let ind = tl.receive().await;
+            assert!(matches!(ind, Ok(TransportServiceInd::DataConnected(_))), "{ind:?}");
+            assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
+        }));
+    }
+
+    #[test]
+    fn repeated_data_is_acked_but_not_indicated() {
+        let (h, tl) = StackHarness::new();
+        run(h.run(async {
+            h.inject(&t_connect(PEER));
+            tl.receive().await.unwrap();
+            h.inject(&t_data_connected(PEER, 0));
+            tl.receive().await.unwrap();
+            assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
+
+            // The peer missed our T_ACK and repeats the frame.
+            h.inject(&t_data_connected(PEER, 0));
+            h.inject(&t_disconnect(PEER));
+            let ind = tl.receive().await;
+            assert!(matches!(ind, Ok(TransportServiceInd::Disconnect(_))), "{ind:?}");
+            assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
+        }));
+    }
+
+    #[test]
+    fn sequence_number_wraps_after_15() {
+        // B3
+        let (h, tl) = StackHarness::new();
+        run(h.run(async {
+            h.inject(&t_connect(PEER));
+            tl.receive().await.unwrap();
+            for seq in (0..16).chain([0, 1]) {
+                h.inject(&t_data_connected(PEER, seq));
+                let ind = tl.receive().await;
+                assert!(
+                    matches!(ind, Ok(TransportServiceInd::DataConnected(_))),
+                    "seq {seq}: {ind:?}"
+                );
+                assert_eq!(h.sent().await, sent_control(PEER, 0xC2 | seq << 2), "seq {seq}");
+            }
+        }));
+    }
+
+    #[test]
+    fn out_of_sequence_data_right_after_connect() {
+        // B3: `seq_no_recv - 1` underflowed at 0.
+        let (h, tl) = StackHarness::new();
+        run(h.run(async {
+            h.inject(&t_connect(PEER));
+            tl.receive().await.unwrap();
+            h.inject(&t_data_connected(PEER, 3));
+            h.inject(&t_data_connected(PEER, 0));
+            let ind = tl.receive().await;
+            assert!(matches!(ind, Ok(TransportServiceInd::DataConnected(_))), "{ind:?}");
+            assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
+        }));
+    }
+
+    #[test]
+    fn t_ack_and_t_nak_are_recognised() {
+        // B2: both were rejected as invalid TPDUs.
+        let (h, tl) = StackHarness::new();
+        run(h.run(async {
+            h.inject(&t_connect(PEER));
+            tl.receive().await.unwrap();
+            h.inject(&t_ack(PEER, 0));
+            h.inject(&t_nak(PEER, 0));
+            h.inject(&t_disconnect(PEER));
+            let ind = tl.receive().await;
+            assert!(matches!(ind, Ok(TransportServiceInd::Disconnect(_))), "{ind:?}");
+        }));
+    }
+
+    #[test]
+    fn second_connection_is_rejected() {
+        let (h, tl) = StackHarness::new();
+        run(h.run(async {
+            h.inject(&t_connect(PEER));
+            tl.receive().await.unwrap();
+
+            h.inject(&t_connect(OTHER));
+            h.inject(&t_data_connected(PEER, 0));
+            let ind = tl.receive().await;
+            assert!(matches!(ind, Ok(TransportServiceInd::DataConnected(_))), "{ind:?}");
+            assert_eq!(h.sent().await, sent_control(OTHER, 0x81));
+            assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
+        }));
+    }
+
+    #[test]
+    fn data_after_disconnect_is_rejected() {
+        let (h, tl) = StackHarness::new();
+        run(h.run(async {
+            h.inject(&t_connect(PEER));
+            tl.receive().await.unwrap();
+            h.inject(&t_disconnect(PEER));
+            let ind = tl.receive().await;
+            assert!(matches!(ind, Ok(TransportServiceInd::Disconnect(_))), "{ind:?}");
+
+            h.inject(&t_data_connected(PEER, 0));
+            h.inject(&[0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE1, 0x00, 0x00]);
+            let ind = tl.receive().await;
+            assert!(matches!(ind, Ok(TransportServiceInd::DataGroup(_))), "{ind:?}");
+            assert_eq!(h.sent().await, sent_control(PEER, 0x81));
+            settle().await;
+            assert!(h.nothing_sent());
+        }));
     }
 }

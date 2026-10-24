@@ -3,38 +3,33 @@ name = "embassy-knx"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+defmt = [
+    "dep:defmt",
+    "embassy-sync/defmt",
+    "embassy-time/defmt",
+    "embedded-io-async/defmt",
+    "heapless/defmt",
+]
+
 [dependencies]
 embassy-futures = { version = "0.1.2" }
-embassy-sync = { version = "0.8.0", features = ["defmt"] }
-embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "defmt"] }
-embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
-embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf5340-net", "time-driver-rtc1", "gpiote", "unstable-pac"] }
-#embassy-net = { version = "0.6.0", features = ["defmt", "tcp", "dhcpv4", "medium-ethernet"] }
-#embassy-usb = { version = "0.4.0", features = ["defmt"] }
+embassy-sync = { version = "0.8.0" }
+embassy-time = { version = "0.5.1" }
 embedded-io-async = { version = "0.7.0" }
+embedded-hal = { version = "1.0.0" }
 
-defmt = "1.2"
-defmt-rtt = "1.3"
+defmt = { version = "1.2", optional = true }
 
-static_cell = "2.1"
-cortex-m = { version = "0.7.10", features = ["inline-asm", "critical-section-single-core"] }
-cortex-m-rt = "0.7.7"
-panic-probe = { version = "1.0", features = ["print-defmt"] }
-bit_field = { version = "0.10" }
-heapless = { version = "0.9", features = ["defmt"] }
-assign-resources = { version = "0.5" }
+heapless = { version = "0.9" }
 num_enum = { version = "0.7.6", default-features = false }
-ambassador = "0.4"
 enum_dispatch = "0.3.13"
-futures = { version = "0.3.34", default-features = false, features = ["async-await", "cfg-target-has-atomic"]}
-#rand = { version = "0.8.4", default-features = false }
-#embedded-storage = "0.3.1"
-#usbd-hid = "0.8.1"
-#serde = { version = "1.0.136", default-features = false }
-#binrw = {version = "0.14.1"}
 
-[profile.release]
-debug = 2
-#opt-level = "z"
-#lto = true
-#panic = "abort"
+# heapless' pool needs 128-bit CAS on 64-bit targets (host tests); ARM uses LL/SC natively.
+[target.'cfg(target_pointer_width = "64")'.dependencies]
+heapless = { version = "0.9", features = ["portable-atomic"] }
+
+[dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }
+embassy-time = { version = "0.5.1", features = ["std", "generic-queue-64"] }
+futures-executor = "0.3.34"

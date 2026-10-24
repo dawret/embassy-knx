@@ -1,11 +1,14 @@
 use crate::data_point::*;
 use crate::transport_layer::{TransportLayer, TransportServiceInd};
 use crate::{frame::*, transport_layer};
-use defmt::*;
 use embassy_futures::select::{select, Either};
-use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 
+pub const SERVICE_CHANNEL_SIZE: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ApplicationServiceInd {
     GroupValueRead(u8 /*ASAP */),
 }
@@ -42,15 +45,15 @@ pub enum ApplicationServiceRes {
 
 pub struct ApplicationLayer {
     transport: TransportLayer,
-    rx: Receiver<'static, ThreadModeRawMutex, ApplicationServiceRes, 4>,
-    tx: Sender<'static, ThreadModeRawMutex, ApplicationServiceInd, 4>,
+    rx: Receiver<'static, CriticalSectionRawMutex, ApplicationServiceRes, SERVICE_CHANNEL_SIZE>,
+    tx: Sender<'static, CriticalSectionRawMutex, ApplicationServiceInd, SERVICE_CHANNEL_SIZE>,
 }
 
 impl ApplicationLayer {
     pub fn new(
         transport: TransportLayer,
-        rx: Receiver<'static, ThreadModeRawMutex, ApplicationServiceRes, 4>,
-        tx: Sender<'static, ThreadModeRawMutex, ApplicationServiceInd, 4>,
+        rx: Receiver<'static, CriticalSectionRawMutex, ApplicationServiceRes, SERVICE_CHANNEL_SIZE>,
+        tx: Sender<'static, CriticalSectionRawMutex, ApplicationServiceInd, SERVICE_CHANNEL_SIZE>,
     ) -> Self {
         Self {
             transport: transport,

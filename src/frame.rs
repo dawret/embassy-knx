@@ -1,17 +1,36 @@
 use crate::data_point::{DataPoint, DataPointAccess, DataPointLength};
-use crate::ncn51_driver::FRAME_POOL;
-use defmt::*;
-use heapless::{pool::boxed::Box, Vec};
+use heapless::{
+    pool::boxed::{Box, BoxBlock},
+    Vec,
+};
 use num_enum::{IntoPrimitive, UnsafeFromPrimitive};
 
-#[derive(Format, UnsafeFromPrimitive, IntoPrimitive)]
+pub const MAX_FRAME_SIZE: usize = 264;
+pub type FrameBuf = Vec<u8, MAX_FRAME_SIZE>;
+pub type FrameBlock = BoxBlock<FrameBuf>;
+mod pool {
+    #![allow(non_camel_case_types)]
+    heapless::box_pool!(FRAME_POOL: super::FrameBuf);
+}
+use pool::FRAME_POOL;
+
+/// Hands the frame buffers to the pool. Call once at startup, before any frame is allocated.
+pub fn init_frame_pool(blocks: &'static mut [FrameBlock]) {
+    for block in blocks {
+        FRAME_POOL.manage(block);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, UnsafeFromPrimitive, IntoPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum FrameType {
     Standard = 1,
     Extended = 0,
 }
 
-#[derive(Format)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum FrameError {
     InvalidLength,
     OutOfMemory,
@@ -21,14 +40,16 @@ pub enum FrameError {
 
 type FrameResult<T> = Result<T, FrameError>;
 
-#[derive(Format, UnsafeFromPrimitive, IntoPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, UnsafeFromPrimitive, IntoPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum AddressType {
     Individual = 0,
     Group = 1,
 }
 
-#[derive(Format, UnsafeFromPrimitive, IntoPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, UnsafeFromPrimitive, IntoPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum Priority {
     Low = 0x3,
@@ -37,14 +58,15 @@ pub enum Priority {
     System = 0x0,
 }
 
-#[derive(Format, UnsafeFromPrimitive, IntoPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, UnsafeFromPrimitive, IntoPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
-enum Repeated {
+pub enum Repeated {
     Repeated = 0,
     NotRepeated = 1,
 }
 
-#[derive(PartialEq, PartialOrd, Hash, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash)]
 pub struct IndividualAddress(u16);
 
 impl IndividualAddress {
@@ -72,8 +94,9 @@ impl From<u16> for IndividualAddress {
     }
 }
 
-impl Format for IndividualAddress {
-    fn format(&self, fmt: Formatter) {
+#[cfg(feature = "defmt")]
+impl defmt::Format for IndividualAddress {
+    fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(
             fmt,
             "{}.{}.{}",
@@ -84,7 +107,7 @@ impl Format for IndividualAddress {
     }
 }
 
-#[derive(PartialEq, PartialOrd, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash)]
 pub struct GroupAddress(u16);
 
 impl GroupAddress {
@@ -100,8 +123,9 @@ impl GroupAddress {
     }
 }
 
-impl Format for GroupAddress {
-    fn format(&self, fmt: Formatter) {
+#[cfg(feature = "defmt")]
+impl defmt::Format for GroupAddress {
+    fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(
             fmt,
             "{}/{}/{}",
@@ -124,7 +148,8 @@ impl From<u16> for GroupAddress {
     }
 }
 
-#[derive(Format)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Address {
     Individual(IndividualAddress),
     Group(GroupAddress),
@@ -139,13 +164,15 @@ impl Address {
     }
 }
 
-#[derive(Format, IntoPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(usize)]
 pub enum TpciBits {
     Six = 6,
     Eight = 8,
 }
-#[derive(Format, IntoPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(usize)]
 pub enum ApciBits {
     Four = 6,
@@ -168,7 +195,7 @@ pub trait FrameReader {
     const MIN_FRAME_SIZE: usize;
 
     fn data(&self) -> &[u8];
-    fn length(&self) -> u8;
+    fn length(&self) -> usize;
     fn frame_type(&self) -> FrameType {
         // This is safe, possible values: 0, 1
         unsafe { FrameType::unchecked_transmute_from(self.data()[Self::CTRL] >> 7) }
@@ -205,7 +232,7 @@ pub trait FrameReader {
         }
     }
     fn tpci_seq(&self) -> u8 {
-        (self.data()[Self::TPCI_OFFSET] >> 2) & 0x7
+        (self.data()[Self::TPCI_OFFSET] >> 2) & 0xF
     }
     fn apci(&self, bits: ApciBits) -> u16 {
         let apci: u16 = ((self.data()[Self::APCI_OFFSET] as u16 & 0x3) << 8)
@@ -216,13 +243,14 @@ pub trait FrameReader {
         }
     }
     fn apdu_data(&self) -> &[u8] {
-        &self.data()[Self::APCI_OFFSET + 1..self.length() as usize]
+        &self.data()[Self::APCI_OFFSET + 1..self.length()]
     }
 
     fn checksum(&self) -> u8 {
         !self.data().iter().fold(0, |acc, &v| acc ^ v)
     }
 
+    #[cfg(feature = "defmt")]
     fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(fmt, "Frame type: {}\n", self.frame_type());
         defmt::write!(fmt, "Priority: {}\n", self.priority());
@@ -238,20 +266,25 @@ pub trait FrameWriter: FrameReader + Sized {
     fn set_length(&mut self, length: usize) -> FrameResult<()>;
     fn set_frame_type(&mut self);
     fn new(size: usize) -> FrameResult<Self>;
+    /// Replaces the bits selected by `mask` in octet `index` with those of `value`.
+    fn set_bits(&mut self, index: usize, mask: u8, value: u8) {
+        let octet = &mut self.mut_data()[index];
+        *octet = (*octet & !mask) | (value & mask);
+    }
     fn set_addr_type(&mut self, addr_type: AddressType) {
         let at: u8 = addr_type.into();
-        self.mut_data()[Self::AT_FIELD] |= at << 7;
+        self.set_bits(Self::AT_FIELD, 0x80, at << 7);
     }
     fn set_priority(&mut self, priority: Priority) {
         let p: u8 = priority.into();
-        self.mut_data()[Self::CTRL] |= p << 2;
+        self.set_bits(Self::CTRL, 0x0C, p << 2);
     }
     fn set_repeated(&mut self, repeated: Repeated) {
         let r: u8 = repeated.into();
-        self.mut_data()[Self::CTRL] |= r << 5;
+        self.set_bits(Self::CTRL, 0x20, r << 5);
     }
     fn set_hop_count(&mut self, hop_count: u8) {
-        self.mut_data()[Self::HOP_COUNT_FIELD] |= (hop_count & 0x7) << 4;
+        self.set_bits(Self::HOP_COUNT_FIELD, 0x70, hop_count << 4);
     }
     fn set_src_addr(&mut self, src_addr: &IndividualAddress) {
         src_addr.write(&mut self.mut_data()[Self::SRC_ADDR_OFFSET..]);
@@ -280,32 +313,34 @@ pub trait FrameWriter: FrameReader + Sized {
             DataPointLength::Byte(n) => n,
         };
         let mut frame = Self::new(Self::MAX_FRAME_SIZE)?;
-        datapoint.write(
-            &mut frame.mut_data()[Self::APCI_OFFSET + 1 + size..Self::APCI_OFFSET + size + 2],
-        );
+        // Short values share the octet with the low APCI bits, longer ones follow it.
+        let (offset, octets) = match size {
+            0 => (Self::APCI_OFFSET + 1, 1),
+            n => (Self::APCI_OFFSET + 2, n),
+        };
+        datapoint.write(&mut frame.mut_data()[offset..offset + octets]);
         frame.set_length(Self::HEADER_LENGTH + Self::APCI_BASE_SIZE + size + 1)?;
         Ok(frame)
     }
     fn set_tpci(&mut self, bits: TpciBits, val: u8) {
         match bits {
-            TpciBits::Six => {
-                self.mut_data()[Self::TPCI_OFFSET] |= val << 2;
-            }
+            // The low two bits of the TPCI octet belong to the APCI.
+            TpciBits::Six => self.set_bits(Self::TPCI_OFFSET, 0xFC, val << 2),
             TpciBits::Eight => self.mut_data()[Self::TPCI_OFFSET] = val,
         }
     }
     fn set_tpci_seq(&mut self, val: u8) {
-        self.mut_data()[Self::TPCI_OFFSET] |= (val & 0x7) << 2;
+        self.set_bits(Self::TPCI_OFFSET, 0x3C, val << 2);
     }
     fn set_apci(&mut self, bits: ApciBits, val: u16) {
         match bits {
             ApciBits::Four => {
-                self.mut_data()[Self::APCI_OFFSET] |= (val >> 2) as u8;
-                self.mut_data()[Self::APCI_OFFSET + 1] |= ((val & 0x3) << 6) as u8;
+                self.set_bits(Self::APCI_OFFSET, 0x03, (val >> 2) as u8);
+                self.set_bits(Self::APCI_OFFSET + 1, 0xC0, (val << 6) as u8);
             }
             ApciBits::Ten => {
-                self.mut_data()[Self::APCI_OFFSET] |= (val >> 8) as u8;
-                self.mut_data()[Self::APCI_OFFSET + 1] |= (val & 0xFF) as u8;
+                self.set_bits(Self::APCI_OFFSET, 0x03, (val >> 8) as u8);
+                self.mut_data()[Self::APCI_OFFSET + 1] = val as u8;
             }
         }
     }
@@ -323,8 +358,8 @@ impl FrameReader for StandardFrame {
     fn data(&self) -> &[u8] {
         &self.0
     }
-    fn length(&self) -> u8 {
-        (self.0[Self::LG_FIELD] & 0xF) + Self::HEADER_LENGTH as u8 + 1
+    fn length(&self) -> usize {
+        (self.0[Self::LG_FIELD] & 0xF) as usize + Self::HEADER_LENGTH + 1
     }
 }
 
@@ -333,8 +368,9 @@ impl FrameWriter for StandardFrame {
         &mut self.0
     }
     fn set_length(&mut self, length: usize) -> FrameResult<()> {
-        if length <= Self::MAX_FRAME_SIZE || length >= Self::MIN_FRAME_SIZE {
-            self.0[Self::LG_FIELD] |= (length as u8 - Self::HEADER_LENGTH as u8 - 1) & 0xF;
+        if length <= Self::MAX_FRAME_SIZE && length >= Self::MIN_FRAME_SIZE {
+            let lg = (length - Self::HEADER_LENGTH - 1) as u8;
+            self.set_bits(Self::LG_FIELD, 0x0F, lg);
             self.0
                 .resize_default(length)
                 .map_err(|_| FrameError::InvalidLength)?;
@@ -344,7 +380,8 @@ impl FrameWriter for StandardFrame {
         }
     }
     fn set_frame_type(&mut self) {
-        self.0[Self::CTRL] |= 0x90;
+        // Standard frame, not repeated. Keeps the priority.
+        self.set_bits(Self::CTRL, 0xF3, 0xB0);
     }
     fn new(size: usize) -> FrameResult<Self> {
         let mut buf = FRAME_POOL
@@ -359,8 +396,9 @@ impl FrameWriter for StandardFrame {
     }
 }
 
+#[cfg(feature = "defmt")]
 impl defmt::Format for StandardFrame {
-    fn format(&self, fmt: Formatter) {
+    fn format(&self, fmt: defmt::Formatter) {
         FrameReader::format(self, fmt);
     }
 }
@@ -368,7 +406,7 @@ impl defmt::Format for StandardFrame {
 impl TryFrom<&StandardFrame> for StandardFrame {
     type Error = FrameError;
     fn try_from(value: &StandardFrame) -> Result<Self, Self::Error> {
-        let mut new_frame = StandardFrame::new(value.length() as usize)?;
+        let mut new_frame = StandardFrame::new(value.length())?;
         new_frame.0.clone_from_slice(value.data());
         Ok(new_frame)
     }
@@ -378,6 +416,7 @@ pub struct ExtendedFrame(Box<FRAME_POOL>);
 
 impl FrameReader for ExtendedFrame {
     const CTRL_OFFSET: usize = 2;
+    const LG_FIELD: usize = 6;
     const AT_FIELD: usize = 1;
     const HOP_COUNT_FIELD: usize = 1;
     const MAX_FRAME_SIZE: usize = 263;
@@ -386,8 +425,8 @@ impl FrameReader for ExtendedFrame {
     fn data(&self) -> &[u8] {
         &self.0
     }
-    fn length(&self) -> u8 {
-        self.0[Self::LG_FIELD] + Self::HEADER_LENGTH as u8 + 1
+    fn length(&self) -> usize {
+        self.0[Self::LG_FIELD] as usize + Self::HEADER_LENGTH + 1
     }
 }
 
@@ -396,8 +435,8 @@ impl FrameWriter for ExtendedFrame {
         &mut self.0
     }
     fn set_length(&mut self, length: usize) -> FrameResult<()> {
-        if length <= Self::MAX_FRAME_SIZE || length >= Self::MIN_FRAME_SIZE {
-            self.0[Self::LG_FIELD] = self.0.len() as u8 - Self::HEADER_LENGTH as u8 - 1;
+        if length <= Self::MAX_FRAME_SIZE && length >= Self::MIN_FRAME_SIZE {
+            self.0[Self::LG_FIELD] = (length - Self::HEADER_LENGTH - 1) as u8;
             self.0
                 .resize_default(length)
                 .map_err(|_| FrameError::InvalidLength)?;
@@ -407,7 +446,8 @@ impl FrameWriter for ExtendedFrame {
         }
     }
     fn set_frame_type(&mut self) {
-        self.0[Self::CTRL] |= 0x10;
+        // Extended frame, not repeated. Keeps the priority.
+        self.set_bits(Self::CTRL, 0xF3, 0x30);
     }
     fn new(size: usize) -> FrameResult<Self> {
         let mut buf = FRAME_POOL
@@ -415,12 +455,15 @@ impl FrameWriter for ExtendedFrame {
             .map_err(|_| FrameError::OutOfMemory)?;
         buf.resize_default(size)
             .map_err(|_| FrameError::InvalidLength)?;
-        Ok(ExtendedFrame(buf))
+        let mut frame = ExtendedFrame(buf);
+        frame.set_frame_type();
+        Ok(frame)
     }
 }
 
+#[cfg(feature = "defmt")]
 impl defmt::Format for ExtendedFrame {
-    fn format(&self, fmt: Formatter) {
+    fn format(&self, fmt: defmt::Formatter) {
         FrameReader::format(self, fmt);
     }
 }
@@ -428,13 +471,13 @@ impl defmt::Format for ExtendedFrame {
 impl TryFrom<&ExtendedFrame> for ExtendedFrame {
     type Error = FrameError;
     fn try_from(value: &ExtendedFrame) -> Result<Self, Self::Error> {
-        let mut new_frame = ExtendedFrame::new(value.length() as usize)?;
+        let mut new_frame = ExtendedFrame::new(value.length())?;
         new_frame.0.clone_from_slice(value.data());
         Ok(new_frame)
     }
 }
 
-#[derive(Format)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Frame {
     Standard(StandardFrame),
     Extended(ExtendedFrame),
@@ -447,7 +490,7 @@ impl Frame {
             Self::Extended(f) => f.data(),
         }
     }
-    pub fn length(&self) -> u8 {
+    pub fn length(&self) -> usize {
         match self {
             Self::Standard(f) => f.length(),
             Self::Extended(f) => f.length(),
@@ -574,6 +617,29 @@ impl Frame {
             StandardFrame::from_datapoint(datapoint).map(|v| v.into())
         }
     }
+    /// Copies a complete telegram, including the checksum octet, into a pool frame.
+    /// The control field decides between a standard and an extended frame.
+    pub fn from_slice(bytes: &[u8]) -> FrameResult<Self> {
+        let mut frame: Frame = match bytes.first() {
+            None => return Err(FrameError::InvalidLength),
+            Some(ctrl) if ctrl >> 7 == FrameType::Standard as u8 => {
+                StandardFrame::new(bytes.len())?.into()
+            }
+            Some(_) => ExtendedFrame::new(bytes.len())?.into(),
+        };
+        frame.mut_data().copy_from_slice(bytes);
+        Ok(frame)
+    }
+}
+
+impl core::fmt::Debug for Frame {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let kind = match self {
+            Self::Standard(_) => "Standard",
+            Self::Extended(_) => "Extended",
+        };
+        write!(f, "{}Frame({:02X?})", kind, self.data())
+    }
 }
 
 impl From<StandardFrame> for Frame {
@@ -595,5 +661,193 @@ impl TryFrom<&Frame> for Frame {
             Frame::Standard(f) => StandardFrame::try_from(f).map(|f| f.into()),
             Frame::Extended(f) => ExtendedFrame::try_from(f).map(|f| f.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_point::{B1, U16, U8};
+    use crate::test_util::{frame, init_pool, with_checksum};
+
+    /// A_GroupValue_Read from 1.1.10 to 1/1/98, low priority, hop count 6.
+    const GROUP_VALUE_READ: [u8; 8] = [0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE1, 0x00, 0x00];
+
+    /// The same telegram as an extended frame (LG in octet 6).
+    const EXT_GROUP_VALUE_READ: [u8; 9] = [0x3C, 0xE0, 0x11, 0x0A, 0x09, 0x62, 0x01, 0x00, 0x00];
+
+    #[test]
+    fn addresses_from_parts() {
+        assert_eq!(IndividualAddress::from_parts(1, 1, 120), IndividualAddress::new(0x1178));
+        assert_eq!(IndividualAddress::from_parts(15, 15, 255), IndividualAddress::new(0xFFFF));
+        assert_eq!(GroupAddress::from_parts(1, 1, 98), GroupAddress::new(0x0962));
+        assert_eq!(GroupAddress::from_parts(31, 7, 255), GroupAddress::new(0xFFFF));
+    }
+
+    #[test]
+    fn parses_standard_group_frame() {
+        let f = frame(&GROUP_VALUE_READ);
+        assert!(matches!(f, Frame::Standard(_)));
+        assert_eq!(f.src_addr(), IndividualAddress::from_parts(1, 1, 10));
+        assert_eq!(f.dst_addr(), Address::Group(GroupAddress::from_parts(1, 1, 98)));
+        assert_eq!(f.priority(), Priority::Low);
+        assert_eq!(f.repeated(), Repeated::NotRepeated);
+        assert_eq!(f.hop_count(), 6);
+        assert_eq!(f.length(), 9);
+        assert_eq!(f.tpci(TpciBits::Six), 0);
+        assert_eq!(f.apci(ApciBits::Four), 0);
+    }
+
+    #[test]
+    fn parses_individual_frame() {
+        // T_Connect from 1.1.250 to 1.1.120, system priority.
+        let f = frame(&[0xB0, 0x11, 0xFA, 0x11, 0x78, 0x60, 0x80]);
+        assert_eq!(f.dst_addr(), Address::Individual(IndividualAddress::from_parts(1, 1, 120)));
+        assert_eq!(f.priority(), Priority::System);
+        assert_eq!(f.length(), 8);
+        assert_eq!(f.tpci(TpciBits::Eight), 0x80);
+    }
+
+    #[test]
+    fn from_slice_rejects_empty_input() {
+        assert_eq!(Frame::from_slice(&[]).unwrap_err(), FrameError::InvalidLength);
+    }
+
+    #[test]
+    fn builds_group_frame_with_setters() {
+        init_pool();
+        let mut f = StandardFrame::new(9).unwrap();
+        f.set_priority(Priority::Low);
+        f.set_src_addr(&IndividualAddress::from_parts(1, 1, 10));
+        f.set_dst_addr(&Address::Group(GroupAddress::from_parts(1, 1, 98)));
+        f.set_hop_count(6);
+        f.set_tpci(TpciBits::Six, 0);
+        f.set_apci(ApciBits::Four, 0);
+        // The last octet is the checksum slot, filled in by the driver.
+        assert_eq!(f.data(), &[GROUP_VALUE_READ.as_slice(), &[0]].concat()[..]);
+    }
+
+    #[test]
+    fn new_frames_are_not_marked_repeated() {
+        // B10: control field bit 5 is 0 for a repetition, so a fresh frame needs it set.
+        init_pool();
+        assert_eq!(Frame::from(StandardFrame::new(8).unwrap()).repeated(), Repeated::NotRepeated);
+        assert_eq!(Frame::from(ExtendedFrame::new(9).unwrap()).repeated(), Repeated::NotRepeated);
+    }
+
+    #[test]
+    fn setting_a_field_twice_overwrites_it() {
+        // M1
+        init_pool();
+        let mut f = StandardFrame::new(9).unwrap();
+        f.set_priority(Priority::Low);
+        f.set_priority(Priority::Normal);
+        assert_eq!(f.priority(), Priority::Normal);
+
+        f.set_hop_count(7);
+        f.set_hop_count(5);
+        assert_eq!(f.hop_count(), 5);
+
+        f.set_dst_addr(&Address::Group(GroupAddress::from_parts(1, 1, 98)));
+        f.set_dst_addr(&Address::Individual(IndividualAddress::from_parts(1, 1, 5)));
+        assert_eq!(f.dst_addr(), Address::Individual(IndividualAddress::from_parts(1, 1, 5)));
+
+        f.set_tpci(TpciBits::Six, 0x10);
+        f.set_tpci_seq(5);
+        f.set_tpci_seq(3);
+        assert_eq!(f.tpci_seq(), 3);
+
+        f.set_apci(ApciBits::Four, 0x1);
+        f.set_apci(ApciBits::Four, 0x2);
+        assert_eq!(f.apci(ApciBits::Four), 0x2);
+    }
+
+    #[test]
+    fn sequence_number_has_four_bits() {
+        // B3: T_Data_Connected with sequence number 15.
+        let f = frame(&[0xB0, 0x11, 0xFA, 0x11, 0x78, 0x61, 0x7F, 0x00]);
+        assert_eq!(f.tpci_seq(), 15);
+
+        init_pool();
+        let mut f = StandardFrame::new(8).unwrap();
+        f.set_tpci(TpciBits::Six, 0x10);
+        f.set_tpci_seq(12);
+        assert_eq!(f.tpci_seq(), 12);
+        assert_eq!(f.tpci(TpciBits::Eight), 0x70);
+    }
+
+    #[test]
+    fn standard_frame_length_limits() {
+        // B5
+        init_pool();
+        assert!(StandardFrame::new(StandardFrame::MIN_FRAME_SIZE).is_ok());
+        assert!(StandardFrame::new(StandardFrame::MAX_FRAME_SIZE).is_ok());
+        assert_eq!(
+            StandardFrame::new(StandardFrame::MAX_FRAME_SIZE + 1).err(),
+            Some(FrameError::InvalidLength)
+        );
+        assert_eq!(
+            StandardFrame::new(StandardFrame::MIN_FRAME_SIZE - 1).err(),
+            Some(FrameError::InvalidLength)
+        );
+    }
+
+    #[test]
+    fn parses_extended_frame() {
+        // B4
+        let f = frame(&EXT_GROUP_VALUE_READ);
+        assert!(matches!(f, Frame::Extended(_)));
+        assert_eq!(f.src_addr(), IndividualAddress::from_parts(1, 1, 10));
+        assert_eq!(f.dst_addr(), Address::Group(GroupAddress::from_parts(1, 1, 98)));
+        assert_eq!(f.hop_count(), 6);
+        assert_eq!(f.length(), 10);
+    }
+
+    #[test]
+    fn long_extended_frame_length() {
+        // B4: the length no longer fits in a u8.
+        let mut telegram = [0u8; 259 - 1];
+        telegram[..7].copy_from_slice(&EXT_GROUP_VALUE_READ[..7]);
+        telegram[6] = 250;
+        assert_eq!(frame(&telegram).length(), 259);
+    }
+
+    #[test]
+    fn extended_set_length_writes_requested_length() {
+        // B5
+        init_pool();
+        let mut f = ExtendedFrame::new(10).unwrap();
+        f.set_length(12).unwrap();
+        assert_eq!(f.data().len(), 12);
+        assert_eq!(f.data()[6], 12 - 9);
+        assert_eq!(f.length(), 12);
+    }
+
+    #[test]
+    fn frame_from_short_datapoint() {
+        init_pool();
+        let f = Frame::from_datapoint(&DataPoint::B1(B1::new(true))).unwrap();
+        assert_eq!(f.length(), 9);
+        assert_eq!(f.data()[7] & 0x3F, 0x01);
+    }
+
+    #[test]
+    fn frame_from_byte_datapoints() {
+        // B6
+        init_pool();
+        let f = Frame::from_datapoint(&DataPoint::U8(U8::new(0xA5))).unwrap();
+        assert_eq!(f.length(), 10);
+        assert_eq!(&f.data()[8..9], &[0xA5]);
+
+        let f = Frame::from_datapoint(&DataPoint::U16(U16::new(0x1234))).unwrap();
+        assert_eq!(f.length(), 11);
+        assert_eq!(&f.data()[8..10], &[0x12, 0x34]);
+    }
+
+    #[test]
+    fn debug_shows_bytes() {
+        let f = frame(&GROUP_VALUE_READ);
+        let expected = format!("StandardFrame({:02X?})", with_checksum(&GROUP_VALUE_READ));
+        assert_eq!(format!("{f:?}"), expected);
     }
 }
