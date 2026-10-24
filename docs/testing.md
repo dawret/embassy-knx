@@ -52,11 +52,11 @@ Async code runs on `futures-executor`'s `block_on`, with embassy-time's `std` ti
 - `bus_receive(telegram)` writes the telegram and its checksum to the UART in one go, then waits for bus idle time (`bus_idle()`). The driver uses a 2.6 ms silence to detect the end of a frame, so two telegrams without a gap would merge, exactly as on real hardware.
 - `expect_ack()` checks that the driver sent U_AckInformation.
 - `host_writes()` counts the driver's UART `write` calls.
-- `transmit(con_ok)` serves one L_Data request: `host_request()` decodes the U_L_DataStart/Continue/End command stream and returns the telegram, including the checksum the driver computed; `echo_and_confirm()` echoes it and answers with a positive or negative L_Data.con. Call the two separately to put repetitions (`repetition(telegram)`) or a frame from another device between them.
+- `transmit(con_ok)` serves one L_Data request: `host_request()` decodes the U_L_DataStart/Continue/End/Offset command stream and returns the telegram, including the checksum the driver computed; `echo_and_confirm()` echoes it and answers with a positive or negative L_Data.con. Call the two separately to put repetitions (`repetition(telegram)`) or a frame from another device between them.
 
 | File | Covers |
 |---|---|
-| `tests/driver.rs` | The driver at the byte level: receiving, ACK only for our own individual address and group frames, checksum errors, a full-length extended frame, stray bytes, transmission with positive and negative confirmation, a standard frame sent in one UART write, the confirmation returning the sent frame, repetitions, and a frame received while waiting for the confirmation. |
+| `tests/driver.rs` | The driver at the byte level: receiving, ACK only for our own individual address and group frames, checksum errors, a full-length extended frame, stray bytes, transmission with positive and negative confirmation, a standard frame sent in one UART write, the confirmation returning the sent frame, repetitions, a frame received while waiting for the confirmation, and a long extended frame (U_L_DataOffset). |
 | `tests/stack.rs` | End to end, with the real driver, the full stack and the test acting as the application: a GroupValueRead answered with a GroupValueResponse, and a T_Data_Connected answered with a T_ACK. |
 
 ### Writing new tests

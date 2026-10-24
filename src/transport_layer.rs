@@ -330,16 +330,14 @@ impl Connection {
         network: &NetworkLayer,
         tpci: u8,
     ) -> Result<(), FrameError> {
-        let mut frame = StandardFrame::new(StandardFrame::MIN_FRAME_SIZE)?;
+        let mut frame = Frame::new(FrameType::Standard, FrameType::Standard.min_length())?;
         frame.set_priority(Priority::System);
         frame.set_dst_addr(&Address::Individual(dst_addr));
         frame.set_src_addr(&crate::settings::ADDRESS);
         frame.set_hop_count(7);
         frame.set_tpci(TpciBits::Eight, tpci);
         frame.set_tpci_seq(seq);
-        network
-            .send(NetworkServiceReq::DataIndividual(Frame::Standard(frame)))
-            .await;
+        network.send(NetworkServiceReq::DataIndividual(frame)).await;
         Ok(())
     }
 

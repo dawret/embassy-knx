@@ -170,14 +170,20 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
         let mut buf = [0; TX_CHUNK];
         let mut n = 0;
         for (i, &octet) in frame.data().iter().enumerate() {
+            // The commands carry 6 index bits; U_L_DataOffset sets the upper 3.
+            if i > 0 && i % 64 == 0 {
+                buf[n] = commands::U_L_DATA_OFFSET_REQ | (i / 64) as u8;
+                n += 1;
+            }
+            let index = (i % 64) as u8;
             buf[n] = match i {
                 0 => commands::U_L_DATA_START_REQ,
-                i if i == len - 1 => commands::U_L_DATA_END_REQ | i as u8,
-                i => commands::U_L_DATA_CONT_REQ | i as u8,
+                i if i == len - 1 => commands::U_L_DATA_END_REQ | index,
+                _ => commands::U_L_DATA_CONT_REQ | index,
             };
             buf[n + 1] = octet;
             n += 2;
-            if n == buf.len() || i == len - 1 {
+            if n + 3 > buf.len() || i == len - 1 {
                 self.uart.write_all(&buf[..n]).await.map_err(io_error)?;
                 n = 0;
             }
@@ -208,61 +214,32 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
         }
     }
 
-    async fn receive_frame_int<T: FrameWriter>(
-        &mut self,
-        ctrl: u8,
-        tx: Option<&[u8]>,
-    ) -> Result<Option<T>, TransferError> {
-        let mut header = [0; ExtendedFrame::HEADER_LENGTH];
-        let header = &mut header[..T::HEADER_LENGTH];
-        header[0] = ctrl;
-        self.read_with_timeout(&mut header[1..]).await?;
-        if let Some(tx) = tx.filter(|tx| is_echo_header(header, tx)) {
-            self.receive_echo(&tx[header.len()..]).await?;
-            return Ok(None);
-        }
-        let mut frame = T::new(T::MAX_FRAME_SIZE)?;
-        frame.mut_data()[..header.len()].copy_from_slice(header);
-        self.ack_if_addressed(&frame.dst_addr()).await?;
-        let bytes_read = header.len()
-            + match self
-                .read_with_timeout(&mut frame.mut_data()[T::HEADER_LENGTH..])
-                .await
-            {
-                Ok(bytes) => Ok(bytes),
-                Err(TransferError::Timeout(bytes)) => Ok(bytes),
-                Err(e) => Err(e),
-            }?;
-        if bytes_read < T::MIN_FRAME_SIZE
-            || bytes_read > T::MAX_FRAME_SIZE
-            || bytes_read != frame.length()
-        {
-            return Err(TransferError::Frame(FrameError::InvalidLength));
-        }
-        // The checksum makes the XOR over all octets, including itself, 0xFF.
-        if frame.data()[..bytes_read].iter().fold(0, |acc, b| acc ^ b) != 0xFF {
-            return Err(TransferError::Frame(FrameError::Checksum));
-        }
-        frame.set_length(bytes_read)?;
-
-        Ok(Some(frame))
-    }
-
+    /// Reads exactly the length given in the header, so the frame is passed up without
+    /// waiting for bus silence.
     async fn receive_frame(
         &mut self,
         ctrl: u8,
         tx: Option<&Frame>,
     ) -> Result<Option<Frame>, TransferError> {
-        let tx = tx.map(Frame::data);
-        match ctrl & Self::FRAME_TYPE_MASK {
-            Self::FRAME_TYPE_STD => {
-                Ok(self.receive_frame_int(ctrl, tx).await?.map(Frame::Standard))
-            }
-            Self::FRAME_TYPE_EXT => {
-                Ok(self.receive_frame_int(ctrl, tx).await?.map(Frame::Extended))
-            }
-            _ => unreachable!(),
+        let frame_type = FrameType::of(ctrl);
+        let mut header = [0; FrameType::Extended.header_length()];
+        let header = &mut header[..frame_type.header_length()];
+        header[0] = ctrl;
+        self.read_with_timeout(&mut header[1..]).await?;
+        if let Some(tx) = tx.map(Frame::data).filter(|tx| is_echo_header(header, tx)) {
+            self.receive_echo(&tx[header.len()..]).await?;
+            return Ok(None);
         }
+        let mut frame = Frame::new(frame_type, Frame::length_in_header(header))?;
+        frame.mut_data()[..header.len()].copy_from_slice(header);
+        self.ack_if_addressed(&frame.dst_addr()).await?;
+        self.read_with_timeout(&mut frame.mut_data()[header.len()..])
+            .await?;
+        // The checksum makes the XOR over all octets, including itself, 0xFF.
+        if frame.data().iter().fold(0, |acc, b| acc ^ b) != 0xFF {
+            return Err(TransferError::Frame(FrameError::Checksum));
+        }
+        Ok(Some(frame))
     }
 
     /// `expected` ends with the checksum octet, which differs in repetitions.

@@ -16,7 +16,7 @@ A KNX TP1 device stack for embedded boards, written in `no_std` Rust on [embassy
 | `src/lib.rs`, `src/fmt.rs` | Crate root; logging macros that forward to `defmt` or compile to nothing |
 | `src/bus.rs` | `Bus`: the channels between driver and stack (`bus_rx`, `bus_tx`) and the L_Data.con signal |
 | `src/ncn51_driver.rs` | NCN5130 UART driver, generic over `embedded_io_async`: frame RX/TX, ACK, L_Data.con |
-| `src/frame.rs` | Frame pool, frame buffers and field accessors (`FrameReader`/`FrameWriter`) |
+| `src/frame.rs` | Frame pools (small and large blocks), `Frame` and its field accessors |
 | `src/data_link_layer.rs`, `network_layer.rs`, `transport_layer.rs`, `application_layer.rs` | KNX layers 2–7, each owning the layer below it by value, all running in one task |
 | `src/data_point.rs` | Datapoint type (DPT) encoding |
 | `src/group_object*.rs`, `group_address_table.rs`, `interface_object_server.rs` | Stubs or drafts, not in the module tree |

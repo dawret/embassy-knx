@@ -190,3 +190,18 @@ fn receives_frame_while_waiting_for_confirmation() {
         driver.run(),
     ));
 }
+
+#[test]
+fn transmits_long_extended_frame() {
+    let (sim, bus, driver) = setup();
+    let mut telegram = vec![0x3C, 0xE0, 0x11, 0x78, 0x09, 0x62, 91, 0x00, 0x80];
+    telegram.resize(99, 0x55);
+    run(with_background(
+        async {
+            bus.bus_tx.send(tx_frame(&telegram)).await;
+            assert_eq!(sim.transmit(true).await, with_checksum(&telegram));
+            assert_eq!(bus.con.wait().await.1, ConStatus::Ok);
+        },
+        driver.run(),
+    ));
+}

@@ -7,11 +7,11 @@ use embassy_executor::Spawner;
 use embassy_knx::application_layer::{self, ApplicationLayer, SERVICE_CHANNEL_SIZE};
 use embassy_knx::bus::Bus;
 use embassy_knx::data_point::*;
-use embassy_knx::frame::{self, FrameBlock};
+use embassy_knx::frame::{self, LargeFrameBlock, SmallFrameBlock};
 use embassy_knx::ncn51_driver::NCN51Driver;
 use embassy_knx::{data_link_layer, network_layer, transport_layer};
-use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::buffered_uarte::{self, BufferedUarte};
+use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::{bind_interrupts, peripherals, uarte, Peri};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -37,7 +37,8 @@ bind_interrupts!(struct Irqs {
     SERIAL0 => buffered_uarte::InterruptHandler<peripherals::SERIAL0>;
 });
 
-const FRAME_POOL_SIZE: usize = 8;
+const SMALL_FRAME_POOL_SIZE: usize = 12;
+const LARGE_FRAME_POOL_SIZE: usize = 2;
 
 static BUS: Bus = Bus::new();
 
@@ -96,8 +97,12 @@ async fn main(spawner: Spawner) {
         application_layer::ApplicationServiceRes,
         SERVICE_CHANNEL_SIZE,
     > = Channel::new();
-    static FRAME_BLOCKS: StaticCell<[FrameBlock; FRAME_POOL_SIZE]> = StaticCell::new();
-    frame::init_frame_pool(FRAME_BLOCKS.init([const { FrameBlock::new() }; FRAME_POOL_SIZE]));
+    static SMALL_BLOCKS: StaticCell<[SmallFrameBlock; SMALL_FRAME_POOL_SIZE]> = StaticCell::new();
+    static LARGE_BLOCKS: StaticCell<[LargeFrameBlock; LARGE_FRAME_POOL_SIZE]> = StaticCell::new();
+    frame::init_frame_pool(
+        SMALL_BLOCKS.init([const { SmallFrameBlock::new() }; SMALL_FRAME_POOL_SIZE]),
+        LARGE_BLOCKS.init([const { LargeFrameBlock::new() }; LARGE_FRAME_POOL_SIZE]),
+    );
 
     info!("Hello from rust! We're on core: {}", t);
     info!("My address: {}", embassy_knx::settings::ADDRESS);

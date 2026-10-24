@@ -3,7 +3,7 @@
 use core::convert::Infallible;
 use core::future::Future;
 use embassy_futures::select::{select, Either};
-use embassy_knx::frame::{init_frame_pool, FrameBlock};
+use embassy_knx::frame::{init_frame_pool, LargeFrameBlock, SmallFrameBlock};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::pipe::Pipe;
 use embassy_time::{Duration, Timer, WithTimeout};
@@ -16,8 +16,9 @@ pub const ME: [u8; 2] = [0x11, 0x78];
 pub fn init_pool() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        let blocks = Box::leak(Box::new([const { FrameBlock::new() }; 64]));
-        init_frame_pool(blocks);
+        let small = Box::leak(Box::new([const { SmallFrameBlock::new() }; 64]));
+        let large = Box::leak(Box::new([const { LargeFrameBlock::new() }; 64]));
+        init_frame_pool(small, large);
     });
 }
 
@@ -108,9 +109,15 @@ impl Ncn5130Sim {
     pub async fn host_request(&self) -> Vec<u8> {
         assert_eq!(self.host_byte().await, 0x80, "expected U_L_DataStart");
         let mut telegram = vec![self.host_byte().await];
+        let mut offset = 0;
         loop {
             let cmd = self.host_byte().await;
-            let index = (cmd & 0x3F) as usize;
+            // U_L_DataOffset: the 3 high bits of the 9-bit index.
+            if cmd & 0xF8 == 0x08 {
+                offset = (cmd & 0x07) as usize * 64;
+                continue;
+            }
+            let index = offset + (cmd & 0x3F) as usize;
             assert_eq!(index, telegram.len(), "command {cmd:#04X} out of sequence");
             match cmd & 0xC0 {
                 // U_L_DataContinue

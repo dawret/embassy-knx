@@ -1,6 +1,6 @@
 use crate::bus::{Bus, ConStatus};
 use crate::data_link_layer::DataLinkLayer;
-use crate::frame::{init_frame_pool, Frame, FrameBlock};
+use crate::frame::{init_frame_pool, Frame, LargeFrameBlock, SmallFrameBlock};
 use crate::network_layer::NetworkLayer;
 use crate::transport_layer::TransportLayer;
 use core::future::Future;
@@ -16,8 +16,9 @@ const TEST_POOL_SIZE: usize = 64;
 pub fn init_pool() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        let blocks = Box::leak(Box::new([const { FrameBlock::new() }; TEST_POOL_SIZE]));
-        init_frame_pool(blocks);
+        let small = Box::leak(Box::new([const { SmallFrameBlock::new() }; TEST_POOL_SIZE]));
+        let large = Box::leak(Box::new([const { LargeFrameBlock::new() }; TEST_POOL_SIZE]));
+        init_frame_pool(small, large);
     });
 }
 
