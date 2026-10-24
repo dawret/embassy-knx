@@ -39,13 +39,29 @@ fn b1(flags: &[ConfigFlag]) -> Descriptor {
 
 /// A group telegram from PEER.
 fn received(ga: [u8; 2], apdu: &[u8]) -> Vec<u8> {
-    let header = [0xBC, PEER[0], PEER[1], ga[0], ga[1], 0xE0 | apdu.len() as u8, 0x00];
+    let header = [
+        0xBC,
+        PEER[0],
+        PEER[1],
+        ga[0],
+        ga[1],
+        0xE0 | apdu.len() as u8,
+        0x00,
+    ];
     [&header[..], apdu].concat()
 }
 
 /// A group telegram from us, as the simulator returns it.
 fn sent(ga: [u8; 2], apdu: &[u8]) -> Vec<u8> {
-    let header = [0xBC, ME[0], ME[1], ga[0], ga[1], 0xF0 | apdu.len() as u8, 0x00];
+    let header = [
+        0xBC,
+        ME[0],
+        ME[1],
+        ga[0],
+        ga[1],
+        0xF0 | apdu.len() as u8,
+        0x00,
+    ];
     with_checksum(&[&header[..], apdu].concat())
 }
 
@@ -198,17 +214,24 @@ fn objects_with_i_are_read_at_startup() {
 #[test]
 fn one_write_updates_every_associated_object() {
     let flags = [Communication, Write];
-    Device::run(&[b1(&flags), b1(&flags)], &[(1, 1), (1, 2)], |d| async move {
-        d.receive(&received(GA_A, &WRITE_ON)).await;
-        assert_eq!(d.gos.updated().await, SWITCH);
-        assert_eq!(d.gos.updated().await, STATUS);
-        assert!(d.gos.get::<B1>(STATUS).value());
-    });
+    Device::run(
+        &[b1(&flags), b1(&flags)],
+        &[(1, 1), (1, 2)],
+        |d| async move {
+            d.receive(&received(GA_A, &WRITE_ON)).await;
+            assert_eq!(d.gos.updated().await, SWITCH);
+            assert_eq!(d.gos.updated().await, STATUS);
+            assert!(d.gos.get::<B1>(STATUS).value());
+        },
+    );
 }
 
 #[test]
 fn own_write_updates_other_objects_on_the_same_address() {
-    let objects = [b1(&[Communication, Transmit, Write]), b1(&[Communication, Write])];
+    let objects = [
+        b1(&[Communication, Transmit, Write]),
+        b1(&[Communication, Write]),
+    ];
     Device::run(&objects, &[(1, 1), (1, 2)], |d| async move {
         d.gos.set(SWITCH, &B1::new(true));
         assert_eq!(d.sim.transmit(true).await, sent(GA_A, &WRITE_ON));
@@ -220,23 +243,27 @@ fn own_write_updates_other_objects_on_the_same_address() {
 
 #[test]
 fn data_ack_survives_a_transmit_request() {
-    Device::run(&[b1(&[Communication, Transmit])], &[(1, 1)], |d| async move {
-        d.receive(&[0xB0, PEER[0], PEER[1], ME[0], ME[1], 0x60, 0x80])
-            .await;
-        d.receive(&[0xB0, PEER[0], PEER[1], ME[0], ME[1], 0x61, 0x43, 0x00])
-            .await;
+    Device::run(
+        &[b1(&[Communication, Transmit])],
+        &[(1, 1)],
+        |d| async move {
+            d.receive(&[0xB0, PEER[0], PEER[1], ME[0], ME[1], 0x60, 0x80])
+                .await;
+            d.receive(&[0xB0, PEER[0], PEER[1], ME[0], ME[1], 0x61, 0x43, 0x00])
+                .await;
 
-        let t_ack = d.sim.host_request().await;
-        d.gos.set(SWITCH, &B1::new(true));
-        settle().await;
-        d.sim.echo_and_confirm(&t_ack, true);
-        assert_eq!(d.sim.transmit(true).await, sent(GA_A, &WRITE_ON));
+            let t_ack = d.sim.host_request().await;
+            d.gos.set(SWITCH, &B1::new(true));
+            settle().await;
+            d.sim.echo_and_confirm(&t_ack, true);
+            assert_eq!(d.sim.transmit(true).await, sent(GA_A, &WRITE_ON));
 
-        d.receive(&[0xB0, PEER[0], PEER[1], ME[0], ME[1], 0x61, 0x47, 0x00])
-            .await;
-        let expected = [0xB0, ME[0], ME[1], PEER[0], PEER[1], 0x70, 0xC6];
-        assert_eq!(d.sim.transmit(true).await, with_checksum(&expected));
-    });
+            d.receive(&[0xB0, PEER[0], PEER[1], ME[0], ME[1], 0x61, 0x47, 0x00])
+                .await;
+            let expected = [0xB0, ME[0], ME[1], PEER[0], PEER[1], 0x70, 0xC6];
+            assert_eq!(d.sim.transmit(true).await, with_checksum(&expected));
+        },
+    );
 }
 
 #[test]

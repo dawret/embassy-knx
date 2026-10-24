@@ -289,12 +289,17 @@ impl Frame {
         value_type: ValueType,
         value: &[u8],
     ) -> FrameResult<Self> {
-        let octets = if value_type.is_short() { 0 } else { value.len() };
-        let frame_type = if octets > FrameType::Standard.max_length() - FrameType::Standard.min_length() - 1 {
-            FrameType::Extended
+        let octets = if value_type.is_short() {
+            0
         } else {
-            FrameType::Standard
+            value.len()
         };
+        let frame_type =
+            if octets > FrameType::Standard.max_length() - FrameType::Standard.min_length() - 1 {
+                FrameType::Extended
+            } else {
+                FrameType::Standard
+            };
         let mut frame = Self::new(frame_type, frame_type.min_length() + 1 + octets)?;
         frame.set_priority(priority);
         frame.set_apci(ApciBits::Four, service as u16);
@@ -523,10 +528,22 @@ mod tests {
 
     #[test]
     fn addresses_from_parts() {
-        assert_eq!(IndividualAddress::from_parts(1, 1, 120), IndividualAddress::new(0x1178));
-        assert_eq!(IndividualAddress::from_parts(15, 15, 255), IndividualAddress::new(0xFFFF));
-        assert_eq!(GroupAddress::from_parts(1, 1, 98), GroupAddress::new(0x0962));
-        assert_eq!(GroupAddress::from_parts(31, 7, 255), GroupAddress::new(0xFFFF));
+        assert_eq!(
+            IndividualAddress::from_parts(1, 1, 120),
+            IndividualAddress::new(0x1178)
+        );
+        assert_eq!(
+            IndividualAddress::from_parts(15, 15, 255),
+            IndividualAddress::new(0xFFFF)
+        );
+        assert_eq!(
+            GroupAddress::from_parts(1, 1, 98),
+            GroupAddress::new(0x0962)
+        );
+        assert_eq!(
+            GroupAddress::from_parts(31, 7, 255),
+            GroupAddress::new(0xFFFF)
+        );
     }
 
     #[test]
@@ -534,7 +551,10 @@ mod tests {
         let f = frame(&GROUP_VALUE_READ);
         assert_eq!(f.frame_type(), FrameType::Standard);
         assert_eq!(f.src_addr(), IndividualAddress::from_parts(1, 1, 10));
-        assert_eq!(f.dst_addr(), Address::Group(GroupAddress::from_parts(1, 1, 98)));
+        assert_eq!(
+            f.dst_addr(),
+            Address::Group(GroupAddress::from_parts(1, 1, 98))
+        );
         assert_eq!(f.priority(), Priority::Low);
         assert_eq!(f.repeated(), Repeated::NotRepeated);
         assert_eq!(f.hop_count(), 6);
@@ -546,7 +566,10 @@ mod tests {
     #[test]
     fn parses_individual_frame() {
         let f = frame(&[0xB0, 0x11, 0xFA, 0x11, 0x78, 0x60, 0x80]);
-        assert_eq!(f.dst_addr(), Address::Individual(IndividualAddress::from_parts(1, 1, 120)));
+        assert_eq!(
+            f.dst_addr(),
+            Address::Individual(IndividualAddress::from_parts(1, 1, 120))
+        );
         assert_eq!(f.priority(), Priority::System);
         assert_eq!(f.length(), 8);
         assert_eq!(f.tpci(TpciBits::Eight), 0x80);
@@ -554,7 +577,10 @@ mod tests {
 
     #[test]
     fn from_slice_rejects_empty_input() {
-        assert_eq!(Frame::from_slice(&[]).unwrap_err(), FrameError::InvalidLength);
+        assert_eq!(
+            Frame::from_slice(&[]).unwrap_err(),
+            FrameError::InvalidLength
+        );
     }
 
     #[test]
@@ -595,7 +621,10 @@ mod tests {
 
         f.set_dst_addr(&Address::Group(GroupAddress::from_parts(1, 1, 98)));
         f.set_dst_addr(&Address::Individual(IndividualAddress::from_parts(1, 1, 5)));
-        assert_eq!(f.dst_addr(), Address::Individual(IndividualAddress::from_parts(1, 1, 5)));
+        assert_eq!(
+            f.dst_addr(),
+            Address::Individual(IndividualAddress::from_parts(1, 1, 5))
+        );
 
         f.set_tpci(TpciBits::Six, 0x10);
         f.set_tpci_seq(5);
@@ -650,8 +679,14 @@ mod tests {
             let (min, max) = (frame_type.min_length(), frame_type.max_length());
             assert_eq!(Frame::new(frame_type, min).unwrap().length(), min);
             assert_eq!(Frame::new(frame_type, max).unwrap().length(), max);
-            assert_eq!(Frame::new(frame_type, max + 1).err(), Some(FrameError::InvalidLength));
-            assert_eq!(Frame::new(frame_type, min - 1).err(), Some(FrameError::InvalidLength));
+            assert_eq!(
+                Frame::new(frame_type, max + 1).err(),
+                Some(FrameError::InvalidLength)
+            );
+            assert_eq!(
+                Frame::new(frame_type, min - 1).err(),
+                Some(FrameError::InvalidLength)
+            );
         }
     }
 
@@ -660,7 +695,10 @@ mod tests {
         let f = frame(&EXT_GROUP_VALUE_READ);
         assert_eq!(f.frame_type(), FrameType::Extended);
         assert_eq!(f.src_addr(), IndividualAddress::from_parts(1, 1, 10));
-        assert_eq!(f.dst_addr(), Address::Group(GroupAddress::from_parts(1, 1, 98)));
+        assert_eq!(
+            f.dst_addr(),
+            Address::Group(GroupAddress::from_parts(1, 1, 98))
+        );
         assert_eq!(f.hop_count(), 6);
         assert_eq!(f.length(), 10);
     }
@@ -692,7 +730,9 @@ mod tests {
         assert_eq!(f.apdu_data(), []);
         assert_eq!(f.short_data(), 0x01);
 
-        let f = frame(&[0x3C, 0xE0, 0x11, 0x0A, 0x09, 0x62, 0x03, 0x00, 0x80, 0xA5, 0x5A]);
+        let f = frame(&[
+            0x3C, 0xE0, 0x11, 0x0A, 0x09, 0x62, 0x03, 0x00, 0x80, 0xA5, 0x5A,
+        ]);
         assert_eq!(f.apdu_data(), [0xA5, 0x5A]);
     }
 
@@ -715,18 +755,33 @@ mod tests {
     #[test]
     fn group_values_of_whole_octets_follow_the_apci() {
         init_pool();
-        let f = Frame::group_value(GroupService::Response, Priority::Low, ValueType::octets(1), &[0xA5])
-            .unwrap();
+        let f = Frame::group_value(
+            GroupService::Response,
+            Priority::Low,
+            ValueType::octets(1),
+            &[0xA5],
+        )
+        .unwrap();
         assert_eq!(f.length(), 10);
         assert_eq!(f.group_service(), Some(GroupService::Response));
         assert_eq!(f.apdu_data(), [0xA5]);
 
-        let f = Frame::group_value(GroupService::Write, Priority::Low, ValueType::bits(7), &[0x7F])
-            .unwrap();
+        let f = Frame::group_value(
+            GroupService::Write,
+            Priority::Low,
+            ValueType::bits(7),
+            &[0x7F],
+        )
+        .unwrap();
         assert_eq!(f.apdu_data(), [0x7F]);
 
-        let f = Frame::group_value(GroupService::Write, Priority::Low, ValueType::octets(2), &[0x12, 0x34])
-            .unwrap();
+        let f = Frame::group_value(
+            GroupService::Write,
+            Priority::Low,
+            ValueType::octets(2),
+            &[0x12, 0x34],
+        )
+        .unwrap();
         assert_eq!(f.length(), 11);
         assert_eq!(f.apdu_data(), [0x12, 0x34]);
     }
@@ -734,13 +789,23 @@ mod tests {
     #[test]
     fn long_group_values_use_extended_frames() {
         init_pool();
-        let f = Frame::group_value(GroupService::Write, Priority::Low, ValueType::octets(14), &[7; 14])
-            .unwrap();
+        let f = Frame::group_value(
+            GroupService::Write,
+            Priority::Low,
+            ValueType::octets(14),
+            &[7; 14],
+        )
+        .unwrap();
         assert_eq!(f.frame_type(), FrameType::Standard);
         assert_eq!(f.length(), FrameType::Standard.max_length());
 
-        let f = Frame::group_value(GroupService::Write, Priority::Low, ValueType::octets(15), &[7; 15])
-            .unwrap();
+        let f = Frame::group_value(
+            GroupService::Write,
+            Priority::Low,
+            ValueType::octets(15),
+            &[7; 15],
+        )
+        .unwrap();
         assert_eq!(f.frame_type(), FrameType::Extended);
         assert_eq!(f.group_service(), Some(GroupService::Write));
         assert_eq!(f.apdu_data(), [7; 15]);

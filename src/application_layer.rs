@@ -78,7 +78,8 @@ impl ApplicationLayer {
                 self.group_objects.confirm(asap, status);
                 if write && status == ConStatus::Ok {
                     for other in self.associations.asaps(tsap).filter(|&a| a != asap) {
-                        self.group_objects.bus_value(other, GroupService::Write, &frame);
+                        self.group_objects
+                            .bus_value(other, GroupService::Write, &frame);
                     }
                 }
             }

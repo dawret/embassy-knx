@@ -67,7 +67,11 @@ impl Ncn5130Sim {
     }
 
     pub fn send_to_host(&self, bytes: &[u8]) {
-        assert_eq!(self.to_host.try_write(bytes), Ok(bytes.len()), "UART buffer full");
+        assert_eq!(
+            self.to_host.try_write(bytes),
+            Ok(bytes.len()),
+            "UART buffer full"
+        );
     }
 
     pub async fn bus_receive(&self, telegram: &[u8]) {
@@ -100,7 +104,11 @@ impl Ncn5130Sim {
     }
 
     pub async fn expect_ack(&self) {
-        assert_eq!(self.host_byte().await, U_ACK, "expected U_AckInformation(ACK)");
+        assert_eq!(
+            self.host_byte().await,
+            U_ACK,
+            "expected U_AckInformation(ACK)"
+        );
     }
 
     pub async fn transmit(&self, con_ok: bool) -> Vec<u8> {

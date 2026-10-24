@@ -64,9 +64,9 @@ mod commands {
 
 #[allow(dead_code)]
 enum AckTypes {
-    NACK = 0x4,
-    BUSY = 0x2,
-    ACK = 0x1,
+    Nack = 0x4,
+    Busy = 0x2,
+    Ack = 0x1,
 }
 
 const CHANNEL_SIZE: usize = 8;
@@ -122,8 +122,7 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
         loop {
             let mut buf = [0; 1];
             let bus = self.bus;
-            match select(self.read_byte(&mut buf), bus.bus_tx.ready_to_receive()).await
-            {
+            match select(self.read_byte(&mut buf), bus.bus_tx.ready_to_receive()).await {
                 Either::First(Err(e)) => info!("Reception error: {}", e),
                 Either::First(Ok(())) if self.is_frame_start(buf[0]) => {
                     self.receive(buf[0], None).await
@@ -157,7 +156,7 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
                 self.read_with_timeout_ignore_errors().await;
                 //TODO: Handle NACK
 
-                /*if let Err(e) = self.ack(AckTypes::NACK).await {
+                /*if let Err(e) = self.ack(AckTypes::Nack).await {
                     info!("Failed to send NACK: {}", e);
                 }*/
             }
@@ -264,7 +263,7 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
             Address::Individual(ref addr) => addr == &crate::settings::ADDRESS,
             Address::Group(_) => true,
         } {
-            self.ack(AckTypes::ACK).await
+            self.ack(AckTypes::Ack).await
         } else {
             Ok(())
         }

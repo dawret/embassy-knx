@@ -6,7 +6,7 @@ A KNX TP1 device stack for embedded boards, written in `no_std` Rust on [embassy
 - **Transceiver link:** UARTE `SERIAL0`, RX `P1.10`, TX `P1.11`, 38400 baud, even parity.
 - **Two packages:** the repo root is the stack as a HAL-free `no_std` library (`embassy-knx`), which builds for the host. `firmware/` is the nRF5340 binary (`embassy-knx-firmware`), a separate package with its own `Cargo.lock`, `.cargo/config.toml` (ARM target, probe-rs runner), `memory.x` and `build.rs`.
 - **Build:** `cd firmware && cargo build`. **Flash and run:** `cd firmware && cargo run`. Logging uses `defmt` over RTT; in the library, `defmt` is an optional feature that the firmware enables.
-- **Tests:** `cargo test` at the repo root runs the host tests (unit tests, plus driver and end-to-end tests against a simulated NCN5130). Also run `cargo build --features defmt` and the firmware build after changes. See [`docs/testing.md`](docs/testing.md). `knxtest/` holds Node.js scripts (`knxultimate`) that talk to the device through a KNX/IP tunnel.
+- **Tests:** `cargo test` at the repo root runs the host tests (unit tests, plus driver and end-to-end tests against a simulated NCN5130). Also run `cargo build --features defmt` and the firmware build after changes. Commits go through `.githooks/pre-commit` (rustfmt and `clippy -D warnings` on both packages), so keep code formatted and clippy-clean. See [`docs/testing.md`](docs/testing.md). `knxtest/` holds Node.js scripts (`knxultimate`) that talk to the device through a KNX/IP tunnel.
 
 ## Layout
 

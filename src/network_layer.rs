@@ -22,9 +22,7 @@ pub enum NetworkServiceInd {
 
 impl NetworkLayer {
     pub fn new(data_link: DataLinkLayer) -> Self {
-        Self {
-            data_link: data_link,
-        }
+        Self { data_link }
     }
 
     pub async fn next_frame(&self) -> Frame {

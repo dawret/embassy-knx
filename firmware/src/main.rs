@@ -57,7 +57,11 @@ const ASSOCIATIONS: AssociationTable =
     AssociationTable::new(&[Association::new(1, 1), Association::new(2, 2)]);
 static DESCRIPTORS: [Descriptor; 2] = [
     Descriptor::new(ValueType::bits(1), Priority::Low, &[Communication, Write]),
-    Descriptor::new(ValueType::bits(1), Priority::Low, &[Communication, Read, Transmit]),
+    Descriptor::new(
+        ValueType::bits(1),
+        Priority::Low,
+        &[Communication, Read, Transmit],
+    ),
 ];
 
 fn new_group_objects() -> &'static GroupObjects {

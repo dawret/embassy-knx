@@ -30,6 +30,8 @@ pub enum TransportServiceReq {
     DataGroup { tsap: Tsap, frame: Frame },
 }
 
+// The event loop handles one event at a time, so a borrow held across an await is never contended.
+#[allow(clippy::await_holding_refcell_ref)]
 impl TransportLayer {
     pub fn new(network: NetworkLayer, group_addresses: GroupAddressTable) -> Self {
         Self {
@@ -416,7 +418,7 @@ impl Connection {
         mut frame: Frame,
         network: &NetworkLayer,
     ) -> Result<(), FrameError> {
-        frame.set_dst_addr(&Address::Individual(unwrap!(self.src_addr.clone())));
+        frame.set_dst_addr(&Address::Individual(unwrap!(self.src_addr)));
         frame.set_src_addr(&crate::settings::ADDRESS);
         frame.set_hop_count(7);
         frame.set_tpci(TpciBits::Six, 0x10);
@@ -508,7 +510,10 @@ mod tests {
         h.inject(&[0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE1, 0x00, 0x00]);
         let ind = run(h.run(receive(&tl)));
         let tsap = Tsap::new(1);
-        assert!(matches!(ind, Ok(TransportServiceInd::DataGroup { tsap: t, .. }) if t == tsap), "{ind:?}");
+        assert!(
+            matches!(ind, Ok(TransportServiceInd::DataGroup { tsap: t, .. }) if t == tsap),
+            "{ind:?}"
+        );
     }
 
     #[test]
@@ -517,7 +522,10 @@ mod tests {
         h.inject(&[0xBC, 0x11, 0x0A, 0x09, 0x63, 0xE1, 0x00, 0x00]);
         h.inject(&[0xBC, 0x11, 0x0A, 0x00, 0x00, 0xE1, 0x00, 0x00]);
         let ind = run(h.run(receive(&tl)));
-        assert!(matches!(ind, Ok(TransportServiceInd::DataBroadcast(_))), "{ind:?}");
+        assert!(
+            matches!(ind, Ok(TransportServiceInd::DataBroadcast(_))),
+            "{ind:?}"
+        );
     }
 
     #[test]
@@ -525,13 +533,22 @@ mod tests {
         let (h, tl) = StackHarness::new();
         run(h.run(async {
             let frame = Frame::group_read(Priority::Low).unwrap();
-            let req = TransportServiceReq::DataGroup { tsap: Tsap::new(1), frame };
+            let req = TransportServiceReq::DataGroup {
+                tsap: Tsap::new(1),
+                frame,
+            };
             let (_, status) = tl.send(req).await.unwrap();
             assert_eq!(status, ConStatus::Ok);
-            assert_eq!(h.sent().await, [0xBC, ME[0], ME[1], 0x09, 0x62, 0xF1, 0x00, 0x00]);
+            assert_eq!(
+                h.sent().await,
+                [0xBC, ME[0], ME[1], 0x09, 0x62, 0xF1, 0x00, 0x00]
+            );
 
             let frame = Frame::group_read(Priority::Low).unwrap();
-            let req = TransportServiceReq::DataGroup { tsap: Tsap::new(2), frame };
+            let req = TransportServiceReq::DataGroup {
+                tsap: Tsap::new(2),
+                frame,
+            };
             assert!(tl.send(req).await.is_none());
         }));
     }
@@ -541,7 +558,10 @@ mod tests {
         let (h, tl) = StackHarness::new();
         h.inject(&[0xBC, 0x11, 0x0A, 0x00, 0x00, 0xE1, 0x00, 0x00]);
         let ind = run(h.run(receive(&tl)));
-        assert!(matches!(ind, Ok(TransportServiceInd::DataBroadcast(_))), "{ind:?}");
+        assert!(
+            matches!(ind, Ok(TransportServiceInd::DataBroadcast(_))),
+            "{ind:?}"
+        );
     }
 
     #[test]
@@ -558,11 +578,17 @@ mod tests {
         run(h.run(async {
             h.inject(&t_connect(PEER));
             let ind = receive(&tl).await;
-            assert!(matches!(ind, Ok(TransportServiceInd::Connect(_))), "{ind:?}");
+            assert!(
+                matches!(ind, Ok(TransportServiceInd::Connect(_))),
+                "{ind:?}"
+            );
 
             h.inject(&t_data_connected(PEER, 0));
             let ind = receive(&tl).await;
-            assert!(matches!(ind, Ok(TransportServiceInd::DataConnected(_))), "{ind:?}");
+            assert!(
+                matches!(ind, Ok(TransportServiceInd::DataConnected(_))),
+                "{ind:?}"
+            );
             assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
         }));
     }
@@ -580,7 +606,10 @@ mod tests {
             h.inject(&t_data_connected(PEER, 0));
             h.inject(&t_disconnect(PEER));
             let ind = receive(&tl).await;
-            assert!(matches!(ind, Ok(TransportServiceInd::Disconnect(_))), "{ind:?}");
+            assert!(
+                matches!(ind, Ok(TransportServiceInd::Disconnect(_))),
+                "{ind:?}"
+            );
             assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
         }));
     }
@@ -598,7 +627,11 @@ mod tests {
                     matches!(ind, Ok(TransportServiceInd::DataConnected(_))),
                     "seq {seq}: {ind:?}"
                 );
-                assert_eq!(h.sent().await, sent_control(PEER, 0xC2 | seq << 2), "seq {seq}");
+                assert_eq!(
+                    h.sent().await,
+                    sent_control(PEER, 0xC2 | seq << 2),
+                    "seq {seq}"
+                );
             }
         }));
     }
@@ -612,7 +645,10 @@ mod tests {
             h.inject(&t_data_connected(PEER, 3));
             h.inject(&t_data_connected(PEER, 0));
             let ind = receive(&tl).await;
-            assert!(matches!(ind, Ok(TransportServiceInd::DataConnected(_))), "{ind:?}");
+            assert!(
+                matches!(ind, Ok(TransportServiceInd::DataConnected(_))),
+                "{ind:?}"
+            );
             assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
         }));
     }
@@ -627,7 +663,10 @@ mod tests {
             h.inject(&t_nak(PEER, 0));
             h.inject(&t_disconnect(PEER));
             let ind = receive(&tl).await;
-            assert!(matches!(ind, Ok(TransportServiceInd::Disconnect(_))), "{ind:?}");
+            assert!(
+                matches!(ind, Ok(TransportServiceInd::Disconnect(_))),
+                "{ind:?}"
+            );
         }));
     }
 
@@ -641,7 +680,10 @@ mod tests {
             h.inject(&t_connect(OTHER));
             h.inject(&t_data_connected(PEER, 0));
             let ind = receive(&tl).await;
-            assert!(matches!(ind, Ok(TransportServiceInd::DataConnected(_))), "{ind:?}");
+            assert!(
+                matches!(ind, Ok(TransportServiceInd::DataConnected(_))),
+                "{ind:?}"
+            );
             assert_eq!(h.sent().await, sent_control(OTHER, 0x81));
             assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
         }));
@@ -655,12 +697,18 @@ mod tests {
             receive(&tl).await.unwrap();
             h.inject(&t_disconnect(PEER));
             let ind = receive(&tl).await;
-            assert!(matches!(ind, Ok(TransportServiceInd::Disconnect(_))), "{ind:?}");
+            assert!(
+                matches!(ind, Ok(TransportServiceInd::Disconnect(_))),
+                "{ind:?}"
+            );
 
             h.inject(&t_data_connected(PEER, 0));
             h.inject(&[0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE1, 0x00, 0x00]);
             let ind = receive(&tl).await;
-            assert!(matches!(ind, Ok(TransportServiceInd::DataGroup { .. })), "{ind:?}");
+            assert!(
+                matches!(ind, Ok(TransportServiceInd::DataGroup { .. })),
+                "{ind:?}"
+            );
             assert_eq!(h.sent().await, sent_control(PEER, 0x81));
             settle().await;
             assert!(h.nothing_sent());

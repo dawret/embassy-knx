@@ -1,0 +1,23 @@
+#!/bin/sh
+# Enable with: git config core.hooksPath .githooks
+# Checks the working tree, not just the staged changes. Skip with `git commit --no-verify`.
+set -eu
+
+[ -x "$HOME/.cargo/bin/cargo" ] && PATH="$HOME/.cargo/bin:$PATH"
+
+cd "$(git rev-parse --show-toplevel)"
+
+step() {
+    echo "pre-commit: $*" >&2
+    "$@" || {
+        echo "pre-commit: failed: $*" >&2
+        exit 1
+    }
+}
+
+step cargo fmt --check
+step cargo fmt --check --manifest-path firmware/Cargo.toml
+
+step cargo clippy --quiet --all-targets -- -D warnings
+step cargo clippy --quiet --features defmt -- -D warnings
+(cd firmware && step cargo clippy --quiet -- -D warnings)

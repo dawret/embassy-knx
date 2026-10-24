@@ -28,7 +28,10 @@ impl AssociationTable {
 
     /// Every group object a telegram on `tsap` is for.
     pub fn asaps(&self, tsap: Tsap) -> impl Iterator<Item = Asap> + 'static {
-        self.0.iter().filter(move |a| a.tsap == tsap).map(|a| a.asap)
+        self.0
+            .iter()
+            .filter(move |a| a.tsap == tsap)
+            .map(|a| a.asap)
     }
 
     /// The group address an object sends on: its first association.

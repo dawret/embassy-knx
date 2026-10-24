@@ -19,7 +19,11 @@ fn tx_frame(telegram: &[u8]) -> Frame {
     Frame::from_slice(&[telegram, &[0]].concat()).unwrap()
 }
 
-fn setup() -> (&'static Ncn5130Sim, &'static Bus, NCN51Driver<SimUart<'static>, NoLed>) {
+fn setup() -> (
+    &'static Ncn5130Sim,
+    &'static Bus,
+    NCN51Driver<SimUart<'static>, NoLed>,
+) {
     init_pool();
     let sim = leak(Ncn5130Sim::new());
     let bus = leak(Bus::new());
@@ -129,7 +133,10 @@ fn transmits_standard_frame_in_one_write() {
     run(with_background(
         async {
             bus.bus_tx.send(tx_frame(&GROUP_VALUE_RESPONSE)).await;
-            assert_eq!(sim.transmit(true).await, with_checksum(&GROUP_VALUE_RESPONSE));
+            assert_eq!(
+                sim.transmit(true).await,
+                with_checksum(&GROUP_VALUE_RESPONSE)
+            );
             assert_eq!(bus.con.wait().await.1, ConStatus::Ok);
             assert_eq!(sim.host_writes(), 1);
         },
@@ -182,7 +189,10 @@ fn receives_frame_while_waiting_for_confirmation() {
             sim.bus_receive(&GROUP_VALUE_READ).await;
             sim.expect_ack().await;
             sim.echo_and_confirm(&telegram, true);
-            assert_eq!(bus.bus_rx.receive().await.data(), with_checksum(&GROUP_VALUE_READ));
+            assert_eq!(
+                bus.bus_rx.receive().await.data(),
+                with_checksum(&GROUP_VALUE_READ)
+            );
             let (frame, status) = bus.con.wait().await;
             assert_eq!(status, ConStatus::Ok);
             assert_eq!(frame.data(), telegram);

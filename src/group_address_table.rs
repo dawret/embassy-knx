@@ -67,8 +67,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "sorted")]
     fn rejects_unsorted_addresses() {
-        static UNSORTED: [GroupAddress; 2] =
-            [GroupAddress::from_parts(1, 1, 99), GroupAddress::from_parts(1, 1, 98)];
+        static UNSORTED: [GroupAddress; 2] = [
+            GroupAddress::from_parts(1, 1, 99),
+            GroupAddress::from_parts(1, 1, 98),
+        ];
         GroupAddressTable::new(&UNSORTED);
     }
 }

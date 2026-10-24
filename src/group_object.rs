@@ -163,7 +163,10 @@ impl GroupObjectRam {
     const STATUS: u8 = 0x03;
 
     pub const fn new() -> Self {
-        Self { offset: 0, flags: 0 }
+        Self {
+            offset: 0,
+            flags: 0,
+        }
     }
     fn status(&self) -> TransmissionStatus {
         match self.flags & Self::STATUS {
@@ -403,8 +406,7 @@ impl GroupObjects {
     pub(crate) fn start_transmission(&self) -> Option<(Asap, Frame)> {
         self.state.lock(|state| {
             let state = &mut *state.borrow_mut();
-            for (index, (ram, descriptor)) in
-                state.ram.iter_mut().zip(self.descriptors).enumerate()
+            for (index, (ram, descriptor)) in state.ram.iter_mut().zip(self.descriptors).enumerate()
             {
                 if ram.status() != TransmissionStatus::TransmitRequest {
                     continue;
@@ -489,7 +491,13 @@ mod tests {
     }
 
     fn write(apdu: &[u8]) -> Frame {
-        frame(&[&[0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE0 | apdu.len() as u8, 0x00], apdu].concat())
+        frame(
+            &[
+                &[0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE0 | apdu.len() as u8, 0x00],
+                apdu,
+            ]
+            .concat(),
+        )
     }
 
     #[test]
@@ -497,7 +505,11 @@ mod tests {
         let all = [Communication, Read, Write, Transmit, Update, ReadOnInit];
         let d = Descriptor::new(ValueType::bits(1), Priority::Low, &all);
         assert_eq!(d.bits(), 0xFF00);
-        let d = Descriptor::new(ValueType::octets(2), Priority::Normal, &[Communication, Write]);
+        let d = Descriptor::new(
+            ValueType::octets(2),
+            Priority::Normal,
+            &[Communication, Write],
+        );
         assert_eq!(d.bits(), 0x1508);
         assert_eq!(d.priority(), Priority::Normal);
         assert_eq!(d.value_type(), ValueType::octets(2));
@@ -519,7 +531,11 @@ mod tests {
         ];
         for (code, bits, octets) in cases {
             let t = ValueType::from_code(code);
-            assert_eq!((t.size_bits(), t.size_octets()), (bits, octets), "code {code}");
+            assert_eq!(
+                (t.size_bits(), t.size_octets()),
+                (bits, octets),
+                "code {code}"
+            );
             assert_eq!(t.is_short(), code <= 5, "code {code}");
         }
         assert_eq!(ValueType::octets(5).code(), 15);
@@ -613,10 +629,16 @@ mod tests {
     #[test]
     fn reads_on_init_only_for_objects_with_i() {
         init_pool();
-        let gos = objects(&[Communication, Transmit, ReadOnInit], &[Communication, Transmit]);
+        let gos = objects(
+            &[Communication, Transmit, ReadOnInit],
+            &[Communication, Transmit],
+        );
         gos.request_reads_on_init();
         let (asap, f) = gos.start_transmission().unwrap();
-        assert_eq!((asap, f.group_service()), (SWITCH, Some(GroupService::Read)));
+        assert_eq!(
+            (asap, f.group_service()),
+            (SWITCH, Some(GroupService::Read))
+        );
         assert!(gos.start_transmission().is_none());
     }
 
@@ -629,7 +651,11 @@ mod tests {
             (&[Communication, Update], false),
         ] {
             let gos = objects(flags, &[]);
-            assert_eq!(gos.bus_value(SWITCH, GroupService::Write, &w), stored, "{flags:?}");
+            assert_eq!(
+                gos.bus_value(SWITCH, GroupService::Write, &w),
+                stored,
+                "{flags:?}"
+            );
             assert_eq!(gos.get::<B1>(SWITCH).value(), stored, "{flags:?}");
         }
     }

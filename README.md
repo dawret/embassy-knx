@@ -38,6 +38,11 @@ The device's individual address is currently fixed at compile time to `1.1.120` 
   ```sh
   cargo install probe-rs-tools --locked
   ```
+- The pre-commit hook, which runs `cargo fmt --check` and `cargo clippy -D warnings` on both packages:
+  ```sh
+  git config core.hooksPath .githooks
+  ```
+  It checks the working tree, so unstaged changes count. `git commit --no-verify` skips it.
 
 ## Build
 
