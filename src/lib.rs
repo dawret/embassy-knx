@@ -1,8 +1,4 @@
 //! KNX TP1 device stack on top of an onsemi NCN5130 transceiver.
-//!
-//! The crate is `no_std` and HAL-free: the driver talks to the transceiver through
-//! `embedded_io_async::{Read, Write}`, so the whole stack also runs on the host
-//! for testing (see `docs/testing.md`).
 #![cfg_attr(not(test), no_std)]
 
 // Must come first: the logging macros are only visible in modules declared after it.

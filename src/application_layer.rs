@@ -15,7 +15,7 @@ pub enum ApplicationServiceInd {
 
 pub struct GroupReadResponse {
     data: DataPoint,
-    #[allow(dead_code)] // S6: unused until the association table exists.
+    #[allow(dead_code)]
     asap: u8,
     hop_count: u8,
     priority: Priority,

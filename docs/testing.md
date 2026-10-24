@@ -11,7 +11,7 @@ The stack is tested in two tiers. Host tests run on the development machine with
 
 What makes the library testable on the host:
 
-- `NCN51Driver<U, L>` takes any `embedded_io_async::{Read, Write}` as the UART and any `embedded_hal::digital::StatefulOutputPin` as the RX LED. The firmware passes a small `Uarte` adapter, `UarteIo`, because embassy-nrf's `Uarte` implements `Write` but not `Read`.
+- `NCN51Driver<U, L>` takes any `embedded_io_async::{Read, Write}` as the UART and any `embedded_hal::digital::StatefulOutputPin` as the RX LED. The firmware passes embassy-nrf's `BufferedUarte`, which receives continuously into a ring buffer, so `read` returns whatever has arrived and dropping a read loses nothing.
 - The queues between the driver and the stack live in a `Bus` struct (`src/bus.rs`) that is passed in, not in global statics. Each test gets its own `Bus`, so tests run in parallel.
 - All embassy-sync primitives use `CriticalSectionRawMutex`. On the host, `critical-section`'s `std` implementation provides it; it is enabled as a dev-dependency.
 - The frame pool lives in `frame.rs` and is filled by `init_frame_pool()`. heapless 0.9 needs its `portable-atomic` feature for the pool on 64-bit targets; `Cargo.toml` enables it only there.
@@ -51,18 +51,18 @@ Async code runs on `futures-executor`'s `block_on`, with embassy-time's `std` ti
 
 - `bus_receive(telegram)` writes the telegram and its checksum to the UART in one go, then waits for bus idle time (`bus_idle()`). The driver uses a 2.6 ms silence to detect the end of a frame, so two telegrams without a gap would merge, exactly as on real hardware.
 - `expect_ack()` checks that the driver sent U_AckInformation.
+- `host_writes()` counts the driver's UART `write` calls.
 - `transmit(con_ok)` serves one L_Data request: it decodes the U_L_DataStart/Continue/End command stream, echoes the telegram and answers with a positive or negative L_Data.con. It returns the telegram, including the checksum the driver computed.
 
 | File | Covers |
 |---|---|
-| `tests/driver.rs` | The driver at the byte level: receiving, ACK only for our own individual address and group frames, checksum errors, a full-length extended frame, stray bytes, transmission with positive and negative confirmation. |
+| `tests/driver.rs` | The driver at the byte level: receiving, ACK only for our own individual address and group frames, checksum errors, a full-length extended frame, stray bytes, transmission with positive and negative confirmation, a standard frame sent in one UART write. |
 | `tests/stack.rs` | End to end, with the real driver, the full stack and the test acting as the application: a GroupValueRead answered with a GroupValueResponse, and a T_Data_Connected answered with a T_ACK. |
 
 ### Writing new tests
 
-- Write telegrams as hex octets without the checksum, and use `with_checksum()` where the complete telegram is needed. Comment what each telegram is (service, source, destination).
+- Write telegrams as hex octets without the checksum, and use `with_checksum()` where the complete telegram is needed.
 - Frames the stack builds end in an empty checksum slot that the driver fills in. `StackHarness::sent()` strips it.
-- A test that finds a bug should reference its ID from `docs/architecture-review.md` in a comment.
 
 ## MCU tests (planned)
 

@@ -14,7 +14,7 @@ mod pool {
 }
 use pool::FRAME_POOL;
 
-/// Hands the frame buffers to the pool. Call once at startup, before any frame is allocated.
+/// Call once at startup, before any frame is allocated.
 pub fn init_frame_pool(blocks: &'static mut [FrameBlock]) {
     for block in blocks {
         FRAME_POOL.manage(block);
@@ -266,7 +266,6 @@ pub trait FrameWriter: FrameReader + Sized {
     fn set_length(&mut self, length: usize) -> FrameResult<()>;
     fn set_frame_type(&mut self);
     fn new(size: usize) -> FrameResult<Self>;
-    /// Replaces the bits selected by `mask` in octet `index` with those of `value`.
     fn set_bits(&mut self, index: usize, mask: u8, value: u8) {
         let octet = &mut self.mut_data()[index];
         *octet = (*octet & !mask) | (value & mask);
@@ -617,8 +616,7 @@ impl Frame {
             StandardFrame::from_datapoint(datapoint).map(|v| v.into())
         }
     }
-    /// Copies a complete telegram, including the checksum octet, into a pool frame.
-    /// The control field decides between a standard and an extended frame.
+    /// `bytes` includes the checksum octet.
     pub fn from_slice(bytes: &[u8]) -> FrameResult<Self> {
         let mut frame: Frame = match bytes.first() {
             None => return Err(FrameError::InvalidLength),
@@ -670,10 +668,8 @@ mod tests {
     use crate::data_point::{B1, U16, U8};
     use crate::test_util::{frame, init_pool, with_checksum};
 
-    /// A_GroupValue_Read from 1.1.10 to 1/1/98, low priority, hop count 6.
     const GROUP_VALUE_READ: [u8; 8] = [0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE1, 0x00, 0x00];
 
-    /// The same telegram as an extended frame (LG in octet 6).
     const EXT_GROUP_VALUE_READ: [u8; 9] = [0x3C, 0xE0, 0x11, 0x0A, 0x09, 0x62, 0x01, 0x00, 0x00];
 
     #[test]
@@ -700,7 +696,6 @@ mod tests {
 
     #[test]
     fn parses_individual_frame() {
-        // T_Connect from 1.1.250 to 1.1.120, system priority.
         let f = frame(&[0xB0, 0x11, 0xFA, 0x11, 0x78, 0x60, 0x80]);
         assert_eq!(f.dst_addr(), Address::Individual(IndividualAddress::from_parts(1, 1, 120)));
         assert_eq!(f.priority(), Priority::System);
@@ -729,7 +724,6 @@ mod tests {
 
     #[test]
     fn new_frames_are_not_marked_repeated() {
-        // B10: control field bit 5 is 0 for a repetition, so a fresh frame needs it set.
         init_pool();
         assert_eq!(Frame::from(StandardFrame::new(8).unwrap()).repeated(), Repeated::NotRepeated);
         assert_eq!(Frame::from(ExtendedFrame::new(9).unwrap()).repeated(), Repeated::NotRepeated);
@@ -737,7 +731,6 @@ mod tests {
 
     #[test]
     fn setting_a_field_twice_overwrites_it() {
-        // M1
         init_pool();
         let mut f = StandardFrame::new(9).unwrap();
         f.set_priority(Priority::Low);
@@ -764,7 +757,6 @@ mod tests {
 
     #[test]
     fn sequence_number_has_four_bits() {
-        // B3: T_Data_Connected with sequence number 15.
         let f = frame(&[0xB0, 0x11, 0xFA, 0x11, 0x78, 0x61, 0x7F, 0x00]);
         assert_eq!(f.tpci_seq(), 15);
 
@@ -778,7 +770,6 @@ mod tests {
 
     #[test]
     fn standard_frame_length_limits() {
-        // B5
         init_pool();
         assert!(StandardFrame::new(StandardFrame::MIN_FRAME_SIZE).is_ok());
         assert!(StandardFrame::new(StandardFrame::MAX_FRAME_SIZE).is_ok());
@@ -794,7 +785,6 @@ mod tests {
 
     #[test]
     fn parses_extended_frame() {
-        // B4
         let f = frame(&EXT_GROUP_VALUE_READ);
         assert!(matches!(f, Frame::Extended(_)));
         assert_eq!(f.src_addr(), IndividualAddress::from_parts(1, 1, 10));
@@ -805,7 +795,6 @@ mod tests {
 
     #[test]
     fn long_extended_frame_length() {
-        // B4: the length no longer fits in a u8.
         let mut telegram = [0u8; 259 - 1];
         telegram[..7].copy_from_slice(&EXT_GROUP_VALUE_READ[..7]);
         telegram[6] = 250;
@@ -814,7 +803,6 @@ mod tests {
 
     #[test]
     fn extended_set_length_writes_requested_length() {
-        // B5
         init_pool();
         let mut f = ExtendedFrame::new(10).unwrap();
         f.set_length(12).unwrap();
@@ -833,7 +821,6 @@ mod tests {
 
     #[test]
     fn frame_from_byte_datapoints() {
-        // B6
         init_pool();
         let f = Frame::from_datapoint(&DataPoint::U8(U8::new(0xA5))).unwrap();
         assert_eq!(f.length(), 10);

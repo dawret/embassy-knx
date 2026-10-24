@@ -11,6 +11,7 @@ use embassy_knx::frame::{self, FrameBlock};
 use embassy_knx::ncn51_driver::NCN51Driver;
 use embassy_knx::{data_link_layer, network_layer, transport_layer};
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
+use embassy_nrf::buffered_uarte::{self, BufferedUarte};
 use embassy_nrf::{bind_interrupts, peripherals, uarte, Peri};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -21,6 +22,11 @@ use {defmt_rtt as _, panic_probe as _};
 assign_resources! {
     uart: UartResources {
         serial: SERIAL0,
+        // TIMER0/1 are left for a radio stack.
+        timer: TIMER2,
+        ppi_ch1: PPI_CH0,
+        ppi_ch2: PPI_CH1,
+        ppi_group: PPI_GROUP0,
         rx: P1_10,
         tx: P1_11,
         led: P1_07,
@@ -28,48 +34,40 @@ assign_resources! {
 }
 
 bind_interrupts!(struct Irqs {
-    SERIAL0 => uarte::InterruptHandler<peripherals::SERIAL0>;
+    SERIAL0 => buffered_uarte::InterruptHandler<peripherals::SERIAL0>;
 });
 
 const FRAME_POOL_SIZE: usize = 8;
 
 static BUS: Bus = Bus::new();
 
-/// embassy-nrf's `Uarte` implements `embedded_io_async::Write` but not `Read`.
-struct UarteIo(uarte::Uarte<'static>);
+type Driver = NCN51Driver<BufferedUarte<'static>, Output<'static>>;
 
-impl embedded_io_async::ErrorType for UarteIo {
-    type Error = uarte::Error;
-}
-
-impl embedded_io_async::Read for UarteIo {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        self.0.read(buf).await?;
-        Ok(buf.len())
-    }
-}
-
-impl embedded_io_async::Write for UarteIo {
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        self.0.write(buf).await?;
-        Ok(buf.len())
-    }
-
-    async fn flush(&mut self) -> Result<(), Self::Error> {
-        // `Uarte::write` only returns once the transfer has completed.
-        Ok(())
-    }
-}
-
-type Driver = NCN51Driver<UarteIo, Output<'static>>;
+/// Must be even.
+const UART_RX_BUF_SIZE: usize = 256;
+const UART_TX_BUF_SIZE: usize = 64;
 
 fn new_driver(resources: UartResources) -> Driver {
+    static RX_BUF: StaticCell<[u8; UART_RX_BUF_SIZE]> = StaticCell::new();
+    static TX_BUF: StaticCell<[u8; UART_TX_BUF_SIZE]> = StaticCell::new();
     let led_rx = Output::new(resources.led, Level::Low, OutputDrive::Standard);
     let mut config = uarte::Config::default();
     config.parity = uarte::Parity::Included;
     config.baudrate = uarte::Baudrate::Baud38400;
-    let uart = uarte::Uarte::new(resources.serial, resources.rx, resources.tx, Irqs, config);
-    NCN51Driver::new(UarteIo(uart), led_rx, &BUS)
+    let uart = BufferedUarte::new(
+        resources.serial,
+        resources.timer,
+        resources.ppi_ch1,
+        resources.ppi_ch2,
+        resources.ppi_group,
+        resources.rx,
+        resources.tx,
+        Irqs,
+        config,
+        RX_BUF.init([0; UART_RX_BUF_SIZE]),
+        TX_BUF.init([0; UART_TX_BUF_SIZE]),
+    );
+    NCN51Driver::new(uart, led_rx, &BUS)
 }
 
 #[embassy_executor::task]

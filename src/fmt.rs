@@ -1,5 +1,3 @@
-//! Logging macros. They forward to `defmt` when the `defmt` feature is enabled
-//! and compile to nothing otherwise, so the stack also builds on the host.
 #![macro_use]
 #![allow(unused)]
 

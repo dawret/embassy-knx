@@ -146,7 +146,6 @@ mod tests {
 
     #[test]
     fn short_values_keep_the_apci_bits() {
-        // The two high bits belong to the APCI (here A_GroupValue_Write).
         let mut buf = [0x80];
         B1::new(true).write(&mut buf);
         assert_eq!(buf, [0x81]);

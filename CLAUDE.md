@@ -12,7 +12,7 @@ A KNX TP1 device stack for embedded boards, written in `no_std` Rust on [embassy
 
 | File | Role |
 |---|---|
-| `firmware/src/main.rs` | Startup, peripherals and `Uarte` adapter, frame pool and `Bus` statics, task spawning, placeholder user application loop |
+| `firmware/src/main.rs` | Startup, peripherals and `BufferedUarte`, frame pool and `Bus` statics, task spawning, placeholder user application loop |
 | `src/lib.rs`, `src/fmt.rs` | Crate root; logging macros that forward to `defmt` or compile to nothing |
 | `src/bus.rs` | `Bus`: the channels between driver and stack (`bus_rx`, `bus_tx`) and the L_Data.con signal |
 | `src/ncn51_driver.rs` | NCN5130 UART driver, generic over `embedded_io_async`: frame RX/TX, ACK, L_Data.con |

@@ -9,10 +9,6 @@ pub struct TransportLayer {
     connection: RefCell<Connection>,
 }
 
-/*pub enum TSAP {
-
-}*/
-
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum TransportServiceInd {
@@ -29,7 +25,7 @@ pub enum TransportServiceInd {
 }
 
 pub struct DataGroupReq {
-    #[allow(dead_code)] // S6: unused until the association table exists.
+    #[allow(dead_code)]
     tsap: u8,
     frame: Frame,
 }
@@ -49,10 +45,6 @@ impl DataGroupReq {
     }
 }
 
-/*impl Info<network_layer::DataGroupReq> for DataGroupReq {
-
-}*/
-
 pub enum TransportServiceReq {
     DataGroupReq(DataGroupReq),
 }
@@ -68,7 +60,6 @@ impl TransportLayer {
     pub async fn send(&self, req: TransportServiceReq) {
         match req {
             TransportServiceReq::DataGroupReq(req) => {
-                // Hardcode this for now
                 let dst_address = GroupAddress::from_parts(1, 1, 98);
                 self.network
                     .send(NetworkServiceReq::DataGroup(req.info_frame(dst_address)))
@@ -115,7 +106,6 @@ impl TransportLayer {
                         .borrow_mut()
                         .handle_ind(TransportServiceInd::NAK(frame), &self.network)
                         .await
-                    //let _seq = (tpci >> 2) & 0xF;
                 } else {
                     Err(FrameError::InvalidTpdu(tpci))
                 }
@@ -197,7 +187,6 @@ enum Events {
     E27,
 }
 
-/// Sequence numbers are 4 bits wide and wrap around.
 fn next_seq(seq: u8) -> u8 {
     seq.wrapping_add(1) & 0xF
 }
@@ -206,7 +195,7 @@ fn prev_seq(seq: u8) -> u8 {
     seq.wrapping_sub(1) & 0xF
 }
 
-#[allow(dead_code)] // OpenWait and Connecting belong to the unwired sending side.
+#[allow(dead_code)]
 enum States {
     Closed,
     OpenIdle,
@@ -221,7 +210,7 @@ struct Connection {
     rep_count: u8,
     src_addr: Option<IndividualAddress>,
     connection_timeout: Option<Instant>,
-    #[allow(dead_code)] // Only read by repeat_data_A9, which is not wired up yet.
+    #[allow(dead_code)]
     stored_frame: Option<Frame>,
 }
 
@@ -358,7 +347,6 @@ impl Connection {
         &mut self,
         frame: Frame,
     ) -> Result<Option<TransportServiceInd>, FrameError> {
-        // A1
         self.seq_no_recv = 0;
         self.seq_no_send = 0;
         self.src_addr = Some(frame.src_addr());
@@ -371,7 +359,6 @@ impl Connection {
         frame: Frame,
         network: &NetworkLayer,
     ) -> Result<Option<TransportServiceInd>, FrameError> {
-        // A2
         self.send_response_frame(frame.src_addr(), self.seq_no_recv, network, 0xc2)
             .await?;
         self.restart_connection_timeout();
@@ -384,14 +371,13 @@ impl Connection {
         frame: Frame,
         network: &NetworkLayer,
     ) -> Result<Option<TransportServiceInd>, FrameError> {
-        // A3
         self.send_response_frame(frame.src_addr(), frame.tpci_seq(), network, 0xc2)
             .await?;
         self.restart_connection_timeout();
         Ok(None)
     }
 
-    #[allow(dead_code)] // Not wired into handle_event yet.
+    #[allow(dead_code)]
     async fn nak_A4(
         &mut self,
         frame: Frame,
@@ -407,7 +393,6 @@ impl Connection {
         &mut self,
         frame: Frame,
     ) -> Result<Option<TransportServiceInd>, FrameError> {
-        //A5
         self.connection_timeout = None;
         Ok(Some(TransportServiceInd::Disconnect(frame)))
     }
@@ -417,14 +402,13 @@ impl Connection {
         frame: Frame,
         network: &NetworkLayer,
     ) -> Result<Option<TransportServiceInd>, FrameError> {
-        // A6
         self.send_response_frame(frame.src_addr(), 0, network, 0x81)
             .await?;
         self.connection_timeout = None;
         Ok(Some(TransportServiceInd::Disconnect(frame)))
     }
 
-    #[allow(dead_code)] // Not wired into handle_event yet.
+    #[allow(dead_code)]
     async fn send_data_A7(
         &mut self,
         mut frame: Frame,
@@ -443,7 +427,7 @@ impl Connection {
         Ok(())
     }
 
-    #[allow(dead_code)] // Not wired into handle_event yet.
+    #[allow(dead_code)]
     async fn confirm_data_A8(&mut self, _frame: Frame) -> Result<(), FrameError> {
         // Stop ACK timer
         self.seq_no_send = next_seq(self.seq_no_send);
@@ -452,7 +436,7 @@ impl Connection {
         Ok(())
     }
 
-    #[allow(dead_code)] // Not wired into handle_event yet.
+    #[allow(dead_code)]
     async fn repeat_data_A9(&mut self, network: &NetworkLayer) -> Result<(), FrameError> {
         let stored_frame = Frame::try_from(unwrap!(self.stored_frame.as_ref()))?;
         network
@@ -469,13 +453,10 @@ impl Connection {
         frame: Frame,
         network: &NetworkLayer,
     ) -> Result<Option<TransportServiceInd>, FrameError> {
-        // A10
         self.send_response_frame(frame.src_addr(), 0, network, 0x81)
             .await?;
         Ok(None)
     }
-
-    //async fn connect_A12(&mut self, )
 
     fn restart_connection_timeout(&mut self) {
         self.connection_timeout =
@@ -494,13 +475,10 @@ mod tests {
     use super::*;
     use crate::test_util::{run, settle, StackHarness};
 
-    /// Our address, `settings::ADDRESS` (1.1.120).
     const ME: [u8; 2] = [0x11, 0x78];
-    /// The connecting peer, e.g. ETS (1.1.250).
     const PEER: [u8; 2] = [0x11, 0xFA];
     const OTHER: [u8; 2] = [0x11, 0xFB];
 
-    // Telegrams without checksum. Control 0xB0: standard frame, not repeated, system priority.
     fn individual(src: [u8; 2], npci: u8, tpdu: &[u8]) -> Vec<u8> {
         [&[0xB0, src[0], src[1], ME[0], ME[1], npci], tpdu].concat()
     }
@@ -510,7 +488,6 @@ mod tests {
     fn t_disconnect(src: [u8; 2]) -> Vec<u8> {
         individual(src, 0x60, &[0x81])
     }
-    /// T_Data_Connected carrying A_DeviceDescriptor_Read.
     fn t_data_connected(src: [u8; 2], seq: u8) -> Vec<u8> {
         individual(src, 0x61, &[0x40 | seq << 2 | 0x03, 0x00])
     }
@@ -520,7 +497,6 @@ mod tests {
     fn t_nak(src: [u8; 2], seq: u8) -> Vec<u8> {
         individual(src, 0x60, &[0xC3 | seq << 2])
     }
-    /// A control telegram the stack sends to `dst` (hop count 7).
     fn sent_control(dst: [u8; 2], tpci: u8) -> Vec<u8> {
         vec![0xB0, ME[0], ME[1], dst[0], dst[1], 0x70, tpci]
     }
@@ -528,7 +504,6 @@ mod tests {
     #[test]
     fn group_frame_is_indicated() {
         let (h, tl) = StackHarness::new();
-        // A_GroupValue_Read from 1.1.10 to 1/1/98.
         h.inject(&[0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE1, 0x00, 0x00]);
         let ind = run(h.run(tl.receive()));
         assert!(matches!(ind, Ok(TransportServiceInd::DataGroup(_))), "{ind:?}");
@@ -552,7 +527,6 @@ mod tests {
 
     #[test]
     fn connect_then_data_is_acked() {
-        // B1: any connection-oriented frame used to panic with BorrowMutError.
         let (h, tl) = StackHarness::new();
         run(h.run(async {
             h.inject(&t_connect(PEER));
@@ -576,7 +550,6 @@ mod tests {
             tl.receive().await.unwrap();
             assert_eq!(h.sent().await, sent_control(PEER, 0xC2));
 
-            // The peer missed our T_ACK and repeats the frame.
             h.inject(&t_data_connected(PEER, 0));
             h.inject(&t_disconnect(PEER));
             let ind = tl.receive().await;
@@ -587,7 +560,6 @@ mod tests {
 
     #[test]
     fn sequence_number_wraps_after_15() {
-        // B3
         let (h, tl) = StackHarness::new();
         run(h.run(async {
             h.inject(&t_connect(PEER));
@@ -606,7 +578,6 @@ mod tests {
 
     #[test]
     fn out_of_sequence_data_right_after_connect() {
-        // B3: `seq_no_recv - 1` underflowed at 0.
         let (h, tl) = StackHarness::new();
         run(h.run(async {
             h.inject(&t_connect(PEER));
@@ -621,7 +592,6 @@ mod tests {
 
     #[test]
     fn t_ack_and_t_nak_are_recognised() {
-        // B2: both were rejected as invalid TPDUs.
         let (h, tl) = StackHarness::new();
         run(h.run(async {
             h.inject(&t_connect(PEER));

@@ -30,10 +30,6 @@ impl From<FrameError> for TransferError {
     }
 }
 
-/*struct Reset {}
-
-impl Reset {}
-*/
 #[allow(dead_code)]
 pub enum CtrlMsg {
     /*Reset,
@@ -75,10 +71,9 @@ enum AckTypes {
 }
 
 const CHANNEL_SIZE: usize = 8;
+const TX_CHUNK: usize = 64;
 pub static CTRL_CHANNEL: Channel<CriticalSectionRawMutex, CtrlMsg, CHANNEL_SIZE> = Channel::new();
 
-/// NCN5130 UART driver. `uart` is the UART link to the transceiver (38400 baud, even parity),
-/// `led` is toggled on every received frame.
 pub struct NCN51Driver<U, L> {
     uart: U,
     led: L,
@@ -104,7 +99,6 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
     }
 
     async fn write_byte(&mut self, byte: u8) -> Result<(), TransferError> {
-        // A local, so the buffer is in RAM (nRF UARTE DMA can't read from flash).
         let buf = [byte];
         self.uart.write_all(&buf).await.map_err(io_error)
     }
@@ -143,7 +137,6 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
                         }
                     } else {
                         info!("Unexpected byte: {:x}", buf[0]);
-                        // unexpected byte
                     }
                 }
                 Either::Second(_) => {
@@ -163,21 +156,27 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
     }
 
     async fn send_frame(&mut self, mut frame: Frame) -> Result<ConStatus, TransferError> {
-        let len = frame.data().len();
+        let data = frame.data();
+        let len = data.len();
         let checksum = frame.checksum();
+        let mut buf = [0; TX_CHUNK];
+        let mut n = 0;
+        for i in 0..len {
+            let (cmd, octet) = match i {
+                0 => (commands::U_L_DATA_START_REQ, data[0]),
+                i if i == len - 1 => (commands::U_L_DATA_END_REQ | i as u8, checksum),
+                i => (commands::U_L_DATA_CONT_REQ | i as u8, data[i]),
+            };
+            buf[n] = cmd;
+            buf[n + 1] = octet;
+            n += 2;
+            if n == buf.len() || i == len - 1 {
+                self.uart.write_all(&buf[..n]).await.map_err(io_error)?;
+                n = 0;
+            }
+        }
         let mut cmd = [0; 1];
-        self.write_byte(commands::U_L_DATA_START_REQ).await?;
-        self.write_byte(frame.data()[0]).await?;
-        for i in 1..len - 1 {
-            self.write_byte(commands::U_L_DATA_CONT_REQ + i as u8).await?;
-            self.write_byte(frame.data()[i]).await?;
-        }
-        self.write_byte(commands::U_L_DATA_END_REQ | (len as u8 - 1)).await?;
-        self.write_byte(checksum).await?;
-        let rx_buf = frame.mut_data();
-        for i in 0..rx_buf.len() {
-            self.read_with_timeout(&mut rx_buf[i..i + 1]).await?;
-        }
+        self.read_with_timeout(frame.mut_data()).await?;
         self.read_byte(&mut cmd).await?;
         if cmd[0] & 0x7f != 0xb {
             error!("Invalid L_Data.con: {:x}", cmd[0]);
@@ -188,7 +187,6 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
         } else {
             ConStatus::NotOk
         };
-        //info!("Frame transfer complete. L_Data.con: {:x}", cmd[0]);
         Ok(con_status)
     }
 
@@ -248,32 +246,39 @@ impl<U: Read + Write, L: StatefulOutputPin> NCN51Driver<U, L> {
         }
     }
 
+    /// Reads until `buf` is full or the line has been silent for `BUS_SILENCE_US`.
     async fn read_with_timeout(&mut self, buf: &mut [u8]) -> Result<usize, TransferError> {
         let mut read = 0;
-        for i in 0..buf.len() {
-            self.read_byte(&mut buf[i..i + 1])
+        while read < buf.len() {
+            let n = self
+                .uart
+                .read(&mut buf[read..])
                 .with_timeout(Duration::from_micros(Self::BUS_SILENCE_US))
                 .await
-                .map_err(|_| TransferError::TimeoutError(read))??;
-            read = read + 1;
+                .map_err(|_| TransferError::TimeoutError(read))?
+                .map_err(io_error)?;
+            if n == 0 {
+                return Err(TransferError::ReadError(ErrorKind::BrokenPipe));
+            }
+            read += n;
         }
         Ok(read)
     }
 
     async fn read_with_timeout_ignore_errors(&mut self) -> usize {
-        let mut buf = [0; 1];
+        let mut buf = [0; 16];
         let mut read = 0;
         warn!("Dumping data until timeout ignoreing errors...");
         loop {
             match self
-                .read_byte(&mut buf)
+                .uart
+                .read(&mut buf)
                 .with_timeout(Duration::from_micros(Self::BUS_SILENCE_US))
                 .await
             {
-                Ok(_) => {
-                    read = read + 1;
-                }
-                Err(_) => return read,
+                Ok(Ok(0)) | Err(_) => return read,
+                Ok(Ok(n)) => read += n,
+                Ok(Err(_)) => {}
             }
         }
     }

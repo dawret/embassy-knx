@@ -14,9 +14,7 @@ pub enum ConStatus {
 
 /// Queues between the NCN5130 driver and the stack, named from the bus's point of view.
 pub struct Bus {
-    /// Frames received from the bus: driver → data link layer.
     pub bus_rx: Channel<CriticalSectionRawMutex, Frame, BUS_CHANNEL_SIZE>,
-    /// Frames to send on the bus: data link layer → driver.
     pub bus_tx: Channel<CriticalSectionRawMutex, Frame, BUS_CHANNEL_SIZE>,
     /// L_Data.con for the last frame taken from `bus_tx`.
     pub con: Signal<CriticalSectionRawMutex, ConStatus>,

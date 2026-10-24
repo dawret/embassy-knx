@@ -1,4 +1,3 @@
-//! The NCN5130 driver against a simulated transceiver, at the UART byte level.
 mod common;
 
 use common::*;
@@ -6,7 +5,6 @@ use embassy_knx::bus::{Bus, ConStatus};
 use embassy_knx::frame::{Address, Frame, IndividualAddress};
 use embassy_knx::ncn51_driver::NCN51Driver;
 
-/// A_GroupValue_Read from 1.1.10 to 1/1/98.
 const GROUP_VALUE_READ: [u8; 8] = [0xBC, 0x11, 0x0A, 0x09, 0x62, 0xE1, 0x00, 0x00];
 
 fn t_connect(dst: [u8; 2]) -> [u8; 7] {
@@ -41,7 +39,6 @@ fn acks_only_its_own_individual_address() {
         async {
             sim.bus_receive(&t_connect([0x11, 0x05])).await;
             sim.bus_receive(&t_connect(ME)).await;
-            // Whether a frame for another device is passed up is not the driver's concern here.
             let me = Address::Individual(IndividualAddress::from_parts(1, 1, 120));
             while bus.bus_rx.receive().await.dst_addr() != me {}
             settle().await;
@@ -71,7 +68,6 @@ fn drops_frame_with_bad_checksum() {
 
 #[test]
 fn receives_full_length_extended_frame() {
-    // M2: the checksum check read one octet past the received bytes.
     let (sim, bus, driver) = setup();
     run(with_background(
         async {
@@ -104,7 +100,7 @@ fn skips_unexpected_bytes() {
 #[test]
 fn transmits_frame_and_reports_confirmation() {
     let (sim, bus, driver) = setup();
-    // T_ACK from 1.1.120 to 1.1.250. Frames built by the stack carry an empty checksum slot.
+    // Frames built by the stack carry an empty checksum slot.
     let telegram = [0xB0, 0x11, 0x78, 0x11, 0xFA, 0x70, 0xC2];
     let frame = || Frame::from_slice(&[telegram.as_slice(), &[0]].concat()).unwrap();
     run(with_background(
@@ -116,6 +112,22 @@ fn transmits_frame_and_reports_confirmation() {
             bus.bus_tx.send(frame()).await;
             assert_eq!(sim.transmit(false).await, with_checksum(&telegram));
             assert_eq!(bus.con.wait().await, ConStatus::NotOk);
+        },
+        driver.run(),
+    ));
+}
+
+#[test]
+fn transmits_standard_frame_in_one_write() {
+    let (sim, bus, driver) = setup();
+    let telegram = [0xB4, 0x11, 0x78, 0x09, 0x62, 0xE3, 0x00, 0x40, 0x12, 0x34];
+    let frame = Frame::from_slice(&[telegram.as_slice(), &[0]].concat()).unwrap();
+    run(with_background(
+        async {
+            bus.bus_tx.send(frame).await;
+            assert_eq!(sim.transmit(true).await, with_checksum(&telegram));
+            assert_eq!(bus.con.wait().await, ConStatus::Ok);
+            assert_eq!(sim.host_writes(), 1);
         },
         driver.run(),
     ));
